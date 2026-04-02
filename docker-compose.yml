@@ -1,0 +1,103 @@
+version: '3.8'
+services:
+  mcp-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: mcp-postgres
+    environment:
+      POSTGRES_DB: mcp_leadgen
+      POSTGRES_USER: mcp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - mcp_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcp -d mcp_leadgen"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  mcp-redis:
+    image: redis:7-alpine
+    container_name: mcp-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - mcp_redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  mcp-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mcp-backend
+    ports:
+      - "8002:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://mcp:${POSTGRES_PASSWORD}@mcp-postgres:5432/mcp_leadgen
+      - REDIS_URL=redis://mcp-redis:6379
+      - MCP_MODE=true
+      - UI_BASE=${UI_BASE:-https://gtm-mcp.com}
+    env_file:
+      - .env
+    volumes:
+      - apollo_taxonomy:/app/apollo_filters
+    depends_on:
+      mcp-postgres:
+        condition: service_healthy
+      mcp-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health\")'"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  mcp-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mcp-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - mcp-backend
+    restart: unless-stopped
+
+  # Telegram bot (optional) — uncomment and set TELEGRAM_BOT_TOKEN in .env
+  # mcp-telegram:
+  #   build:
+  #     context: ./telegram
+  #     dockerfile: Dockerfile
+  #   container_name: mcp-telegram
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+  #     - OPENAI_API_KEY=${OPENAI_API_KEY}
+  #     - MCP_URL=http://mcp-backend:8000
+  #     - REDIS_URL=redis://mcp-redis:6379/1
+  #     - UI_BASE=${UI_BASE:-https://gtm-mcp.com}
+  #     - AI_MODEL=gpt-4o-mini
+  #   depends_on:
+  #     - mcp-backend
+  #     - mcp-redis
+  #   restart: unless-stopped
+
+networks:
+  default:
+    name: mcp-network
+
+volumes:
+  mcp_postgres_data:
+  mcp_redis_data:
+  apollo_taxonomy:

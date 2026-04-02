@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f5f5f5;
+  --bg-card: white;
+  --bg-header: white;
+  --border: #e0e0e0;
+  --text: #333;
+  --text-secondary: #666;
+  --text-muted: #888;
+  --text-link: #2563eb;
+  --btn-hover: #eee;
+  --active-bg: #e8e8e8;
+  --success: #16a34a;
+  --danger: #dc2626;
+  --warning: #d97706;
+  --info: #2563eb;
+}
+
+.dark {
+  --bg: #1e1e1e;
+  --bg-card: #252526;
+  --bg-header: #252526;
+  --border: #333;
+  --text: #d4d4d4;
+  --text-secondary: #b0b0b0;
+  --text-muted: #858585;
+  --text-link: #569cd6;
+  --btn-hover: #2d2d2d;
+  --active-bg: #37373d;
+  --success: #4ec9b0;
+  --danger: #f14c4c;
+  --warning: #cca700;
+  --info: #569cd6;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+/* ContactsPage chain: .mcp-content-area → .h-full.flex-col → .flex-1 → .ag-theme.h-full
+   Every div in this chain needs explicit height (not just flex-derived). */
+.mcp-content-area > div,
+.mcp-content-area .flex-1 {
+  height: 100% !important;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
