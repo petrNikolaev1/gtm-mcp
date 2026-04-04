@@ -1,12 +1,12 @@
 # Apollo Filter Mapping Skill
 
-Convert natural language segment descriptions into Apollo.io API search filters. This skill replaces intent_parser.py, filter_mapper.py, industry_classifier.py, and cost_estimator.py.
+Convert natural language segment descriptions into Apollo.io API search filters.
 
 ## When to Use
 
 - User provides a gathering query ("find IT consulting companies in Miami")
 - After offer extraction produces segments with keywords
-- When generating filters for tam_gather preview
+- When generating filters for pipeline preview
 
 ## Filter Classification
 
@@ -16,35 +16,75 @@ Convert natural language segment descriptions into Apollo.io API search filters.
 
 ### Inferred (derive automatically, don't ask user)
 - **Size** (employee range) — infer from offer context
-- **Industries** (Apollo industry names) — pick 2-3 from real Apollo industries
+- **Industries** (Apollo industry tag_ids) — pick 2-3 from 84 real industries with tag_ids
 - **Keywords** (free-text search terms) — generate 20-30 freely, informed by seeds
 
 ### Prioritization (nice-to-have, graceful degradation)
 - **Funding** (series_a, series_b) — from document. Applied when Apollo has data, silently dropped when exhausted
 
+## How Apollo Filters Actually Work
+
+### Two Completely Different Filter Types
+
+**Type A — Industry Tag IDs** (`organization_industry_tag_ids`):
+- Uses hex MongoDB ObjectIds (e.g. `5567cdd67369643e64020000`)
+- Only **84 industries** have confirmed tag_ids (from real Apollo data)
+- BEST pagination quality in Apollo — most reliable results per page
+- Each tag_id in a SEPARATE parallel API request
+
+**Type B — Keywords** (`q_organization_keyword_tags`):
+- Accepts ANY free-text strings — no validation, no predefined list
+- Apollo OR-combines keywords within a single request
+- Generate with LLM, use natural language, product names, anything
+- Industry names WITHOUT tag_ids (banking, biotechnology, insurance, etc.) go here as keywords
+
+### The Cardinal Rule
+
+**NEVER combine `organization_industry_tag_ids` with `q_organization_keyword_tags` in the same API request.**
+
+Apollo ANDs filters across types. Combining narrows results catastrophically — often returns 0. Use ONE or the OTHER per request, run both types as parallel streams.
+
+**Base filters** (locations, employee_ranges, funding_stages) combine safely with EITHER type:
+```
+KEYWORD REQUEST:  {"q_organization_keyword_tags": ["..."], "organization_locations": [...], "organization_num_employees_ranges": [...]}
+INDUSTRY REQUEST: {"organization_industry_tag_ids": ["..."], "organization_locations": [...], "organization_num_employees_ranges": [...]}
+```
+
+### 1 Filter Per Request Rule
+
+Apollo's ranking picks ~100 "best matches" per page. Combining multiple keywords or multiple tag_ids in one request distorts ranking:
+
+| Strategy | Unique Domains | Credits |
+|----------|---------|---------|
+| Each keyword alone (10x5p) | **930** | 50 |
+| All 10 together (1x5p) | **126** | 5 |
+| Single-only (missed by together) | **904** | — |
+
+**Rule: 1 keyword per request, 1 industry_tag_id per request. All in parallel.**
+
 ## Step-by-Step Filter Generation
 
-### Step A: Industry Selection
+### Step A: Industry Selection (Tag IDs)
 
-Pick 2-3 industries from the 67 real Apollo industries below. Must be EXACT strings.
+1. Call `apollo_get_taxonomy()` tool → returns `industry_tags` dict (name → hex tag_id)
+2. From the 84 industries with tag_ids, pick 2-3 that match the user's query
+3. Get the hex tag_ids from the mapping
+4. If an industry name you want has NO tag_id → use it as a keyword in Step B instead
 
-**Industry Classification Logic:**
+**SPECIFIC vs BROAD classification** (determines strategy):
 - **SPECIFIC**: industry DIRECTLY matches query, most companies in it ARE what user wants
-  - "fashion brands" → "apparel & fashion" (SPECIFIC)
-  - "video production" → "media production" (SPECIFIC)
+  - "fashion brands" → "apparel & fashion" → SPECIFIC (tag_id: `5567cd82736964540d0b0000`)
+  - "video production" → "media production" → SPECIFIC (tag_id: `5567e0ea7369640d2ba31600`)
   - Rule: if industry name CONTAINS query words → almost certainly SPECIFIC
 - **BROAD**: industry is SUPERSET with many irrelevant types
-  - "IT consulting" → "information technology & services" (BROAD — includes SaaS, hardware, magazines)
-  - "influencer agencies" → "marketing & advertising" (BROAD — includes PR, publishers)
+  - "IT consulting" → "information technology & services" → BROAD (includes SaaS, hardware, media)
+  - "influencer agencies" → "marketing & advertising" → BROAD (includes PR, publishers)
 - **When in doubt**: classify as SPECIFIC (industry search = 90% target rate vs 30-40% for keywords)
 
-**Strategy recommendation:**
-- "industry_first" if ANY industry is SPECIFIC → use industry_tag_ids as primary search
-- "keywords_first" if all BROAD or no industries → use keywords as primary search
-
-### Auto-Taxonomy Extension
-
-When enriching companies or people via Apollo, new `industry_tag_id` values may appear that aren't in the current taxonomy. Auto-add them to the local taxonomy file for future use.
+**Strategy:**
+- `industry_first` if ANY industry is SPECIFIC → industry_tag_ids as primary search stream
+- `keywords_first` if all BROAD or no matching industries → keywords as primary search stream
+- Both streams always run in parallel regardless of strategy — strategy determines which gets more keywords/pages
 
 ### Step B: Keyword Generation + Expansion
 
@@ -59,7 +99,7 @@ Generate 20-30 BASE keywords, then expand to 80-100 total before pipeline starts
 - Buyer search terms ("RFP", "procurement", "vendor selection")
 - Include ALL original keywords + 50-70 new ones
 
-Generate keywords for Apollo search. Include:
+Include:
 - Industry terms and sub-sectors
 - Product/service names specific to the segment
 - Technology names, protocols, standards
@@ -68,17 +108,15 @@ Generate keywords for Apollo search. Include:
 - Business model descriptors
 - Specific platform/tool names
 
-If seed keywords exist from offer extraction, use them as starting point and inspiration. Generate NEW keywords informed by seeds, not just repeat them.
+**Industries without tag_ids as keywords**: "banking", "biotechnology", "insurance", "computer software", "internet", "capital markets" — these have no tag_id but work as free-text keyword searches. Include relevant ones in the keyword list.
 
-**CRITICAL: Apollo keyword behavior (verified live 2026-04-03):**
+If seed keywords exist from offer extraction, use them as starting point and inspiration.
+
+**Apollo keyword behavior (verified live):**
 - `q_organization_keyword_tags` accepts ANY free-text strings
 - Multiple keywords are OR-combined — expands the pool
 - BUT: More keywords changes Apollo's RANKING, not just adds to list
-- 1 keyword → 126 unique domains in 5 pages
-- 10 keywords → 131 unique domains in 5 pages
-- **10kw found 116 NEW domains not in 1kw results** (almost no overlap!)
-- Union of varied searches: 251 unique domains (2x any single search)
-- **Implication**: Running PARALLEL streams with DIFFERENT keyword sets yields MORE unique companies than one combined stream
+- Running PARALLEL streams with DIFFERENT keywords yields MORE unique companies than one combined stream
 
 ### Step C: Location Extraction
 
@@ -101,41 +139,38 @@ If project has seed_data (from offer extraction or example companies):
 - Merge seed_data.keywords with generated keywords (dedup)
 - Merge seed_data.industry_tag_ids with selected tag_ids (union)
 
-## Final Filter Assembly
+### Auto-Taxonomy Extension
 
-```json
-{
-  "q_organization_keyword_tags": ["keyword1", "keyword2", ...],
-  "organization_industry_tag_ids": ["tag_id_1", "tag_id_2"],
-  "organization_locations": ["United States"],
-  "organization_num_employees_ranges": ["51,200", "201,500"],
-  "organization_latest_funding_stage_cd": ["series_a", "series_b"],
-  "mapping_details": {
-    "industries_selected": ["financial services", "banking"],
-    "industry_tag_ids": ["5567cd..."],
-    "keywords_generated": 25,
-    "employee_ranges": ["51,200", "201,500"],
-    "locations": ["United States"],
-    "seed_keywords_count": 12
-  }
-}
+When enriching companies or people via Apollo, new `industry_tag_id` values may appear. The `apollo_enrich_people` and `apollo_enrich_companies` tools auto-extend `industry_tags.json` with newly discovered mappings. Call `apollo_get_taxonomy()` again to get the latest.
+
+## Filter Dispatch — What Gets Sent to Apollo
+
+The generated filters are NOT one API call. They are dispatched as PARALLEL STREAMS:
+
+```
+BASE FILTERS (always applied):
+  organization_locations: ["United States"]
+  organization_num_employees_ranges: ["51,200", "201,500"]
+
+KEYWORD STREAM — 1 keyword per request, all in parallel:
+  Request 1: {"q_organization_keyword_tags": ["payment gateway"], ...base}
+  Request 2: {"q_organization_keyword_tags": ["PSP platform"], ...base}
+  Request 3: {"q_organization_keyword_tags": ["checkout integration"], ...base}
+  ...up to 85 keyword requests
+
+INDUSTRY STREAM — 1 tag_id per request, all in parallel:
+  Request 1: {"organization_industry_tag_ids": ["5567cdd67369643e64020000"], ...base}
+  Request 2: {"organization_industry_tag_ids": ["5567cd4773696439b10b0000"], ...base}
+  ...2-3 industry requests
+
+FUNDED VARIANTS (if funding available, run simultaneously):
+  Every keyword request ALSO runs with funding filter added
+  Every industry request ALSO runs with funding filter added
+  → Doubles the number of parallel streams
+  → Funded companies found first (higher quality, actively scaling)
 ```
 
-## CRITICAL: 1 Filter Per Apollo Request
-
-**NEVER combine multiple keywords or multiple industry_tag_ids in a single Apollo API call.**
-
-Apollo's internal ranking picks ~100 "best matches" per page. Combining filters causes ranking distortion:
-
-| Strategy | Unique Domains | Credits |
-|----------|---------|---------|
-| Each keyword alone (10x5p) | **930** | 50 |
-| All 10 together (1x5p) | **126** | 5 |
-| Single-only (missed by together) | **904** | — |
-
-**Rule: ALWAYS 1 keyword OR 1 industry_tag_id per Apollo request. Run all in parallel.**
-
-BUT: You CAN combine keywords + funding_stage (they work together — funding narrows, not ranks).
+All streams feed a shared dedup set (seen_domains). Stop adding new requests when 400 unique companies reached per round.
 
 ## Apollo Probe (Preview Phase)
 
@@ -147,7 +182,7 @@ Before committing credits, probe with separate calls:
 Show probe_breakdown to user:
 ```json
 [
-  {"type": "industry", "name": "financial services", "total": 3200, "companies": 100},
+  {"type": "industry", "tag_id": "5567cdd67369643e64020000", "name": "financial services", "total": 3200, "companies": 100},
   {"type": "keyword", "name": "payment gateway", "total": 3199, "companies": 85}
 ]
 ```
@@ -178,12 +213,12 @@ Probe companies are saved and reused on confirm (skip re-fetching page 1).
 When document mentions funding:
 
 ```
-Level 0 (highest priority): Keywords + Funding filter
+Level 0 (highest priority): Keywords/Industries + Funding filter
   - ~1,933 companies (funded pool). High quality, actively scaling.
   - FIXES Apollo's sparse pagination issue
   - 10 consecutive empty pages = exhausted → drop funding
 
-Level 1: Keywords WITHOUT funding
+Level 1: Keywords/Industries WITHOUT funding
   - ~43,212 companies BUT sparse pagination (0 per page!)
   - Will exhaust quickly
 
@@ -194,13 +229,55 @@ Level 2+: Keyword regeneration, industry fallback
 
 ## Concentric Circles Model
 
-For industry selection, think in expanding circles:
-- **CORE**: Exact match (payment gateways → "payment gateway")
+For keyword generation, think in expanding circles:
+- **CORE**: Exact match (payment gateways → "payment gateway API")
 - **ADJACENT**: Related sub-sector (payment gateways → "merchant acquiring", "checkout platform")
-- **PERIPHERAL**: Broader ecosystem (payment gateways → "financial infrastructure", "fintech")
+- **PERIPHERAL**: Broader ecosystem (payment gateways → "financial infrastructure", "fintech SaaS")
 
 Generate keywords at all three levels for maximum coverage.
 
-## 67 Real Apollo Industries
+## 84 Apollo Industries With Tag IDs
 
-accounting, airlines/aviation, alternative dispute resolution, alternative medicine, animation, apparel & fashion, architecture & planning, arts & crafts, automotive, aviation & aerospace, banking, biotechnology, broadcast media, building materials, business supplies & equipment, capital markets, chemicals, civic & social organization, civil engineering, commercial real estate, computer & network security, computer games, computer hardware, computer networking, computer software, construction, consumer electronics, consumer goods, consumer services, cosmetics, dairy, defense & space, design, e-learning, education management, electrical/electronic manufacturing, entertainment, environmental services, events services, executive office, facilities services, farming, financial services, food & beverages, food production, fund-raising, furniture, gambling & casinos, glass ceramics & concrete, government administration, government relations, graphic design, health wellness & fitness, higher education, hospital & health care, hospitality, human resources, import & export, individual & family services, industrial automation, information services, information technology & services, insurance, international affairs, international trade & development, internet, investment banking, investment management
+Call `apollo_get_taxonomy()` to get the live mapping. Below is the reference list — use EXACT names for tag_id lookup:
+
+**Technology & Computing:**
+computer & network security, computer games, computer hardware, electrical/electronic manufacturing, information technology & services, semiconductors, telecommunications
+
+**Business Services:**
+consumer services, executive office, facilities services, human resources, management consulting, marketing & advertising, public relations & communications, security & investigations, translation & localization
+
+**Finance & Investment:**
+financial services, fund-raising, venture capital & private equity
+
+**Healthcare & Science:**
+health, wellness & fitness, hospital & health care, medical devices, mental health care, pharmaceuticals, research, veterinary
+
+**Manufacturing & Industry:**
+automotive, building materials, chemicals, civil engineering, construction, glass, ceramics & concrete, machinery, mechanical or industrial engineering, mining & metals, oil & energy, packaging & containers, paper & forest products, textiles, utilities
+
+**Media & Entertainment:**
+animation, design, entertainment, media production, music, online media, photography, publishing, sports
+
+**Government & Nonprofit:**
+defense & space, government administration, government relations, international affairs, international trade & development, law enforcement, libraries, military, museums & institutions, nonprofit organization management, political organization, religious institutions, think tanks
+
+**Education:**
+e-learning, education management, higher education
+
+**Real Estate & Construction:**
+architecture & planning, real estate
+
+**Food & Hospitality:**
+food & beverages, food production, hospitality, restaurants
+
+**Transport & Logistics:**
+airlines/aviation, aviation & aerospace, logistics & supply chain, package/freight delivery, railroad manufacture, transportation/trucking/railroad
+
+**Legal:**
+law practice, legal services
+
+**Retail & Consumer:**
+apparel & fashion, luxury goods & jewelry, retail
+
+**Other:**
+alternative dispute resolution, environmental services, gambling & casinos
