@@ -190,19 +190,30 @@ This is the REAL target rate from actual data — not a guess. Show examples in 
 apollo_estimate_cost(target_count=kpi, contacts_per_company=3, target_rate=probe_target_rate)
 ```
 
-**Resolve email accounts (user MUST specify):**
+**Resolve email accounts — MANDATORY, ask user if not in args:**
+
+**NEVER auto-select accounts from the document. NEVER assume. ALWAYS ask the user.**
+
 ```
-# Step 1: Cache all accounts (returns summary only — count + domains)
+# Step 1: Cache all accounts
 smartlead_list_accounts()
 
-# Step 2: User MUST tell you which accounts. Ask if not provided:
-#   "Which email accounts should I use? (e.g. 'accounts with Sally', 'danila@', domain name)"
-# NEVER assume accounts — always ask or use the hint from user input.
+# Step 2: Check if user provided account hint in /launch arguments
+If "accounts with X" or "accounts from X" in args:
+  → smartlead_search_accounts("X") → show matches, include in strategy doc
+Else:
+  → STOP HERE. Ask the user BEFORE showing the strategy document:
+    "Which email accounts should I use for sending?
+     Example: 'accounts with Sally', 'danila@', 'getsally.io domain'
+     I have {N} accounts across {M} domains."
+  → Wait for user response
+  → smartlead_search_accounts(user_response) → get matching IDs
 
-# Step 3: Search by user's hint
-smartlead_search_accounts("sally")  # or whatever the user specified
-→ Returns matching account IDs ready for campaign creation
+# Step 3: Confirm selection
+Show: "Found {N} accounts matching '{hint}': {top emails}. Using these."
 ```
+
+**This is a HARD REQUIREMENT. Do NOT proceed to Checkpoint 1 without account selection from the user.**
 
 **Create run file with ALL required fields:**
 ```
