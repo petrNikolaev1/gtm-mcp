@@ -1018,10 +1018,48 @@ This ensures Mode 3 future runs and new projects in similar segments start with 
 
 ## Mode 3 Output (append to active campaign)
 
+**Google Sheet + SmartLead link ALWAYS shown — same as Mode 1/2.**
+
 ```
-Contacts Added:
+sheets_export_contacts(project, campaign_slug)  # contacts with reasoning columns
+
+Contacts Added to Campaign:
   Campaign: {name} (ID: {id})
+  SmartLead: https://app.smartlead.ai/app/email-campaigns-v2/{id}/analytics
   NEW: {N} contacts (deduped against {existing})
   TOTAL: {total} in campaign
+  Google Sheet: {sheet_url} (shared with {user_email})
+  Cost: {credits} credits
   New leads entering sending queue automatically.
 ```
+
+## When KPI Not Reached — DON'T GIVE UP
+
+**If contacts < 100 after first round, DO NOT stop.** Analyze what worked and suggest next steps:
+
+```
+KPI Status: {contacts}/{target} contacts ({contacts/target * 100}%)
+
+What worked:
+  Best keywords: {top 3 from keyword_leaderboard by quality_score}
+  Best industry: {top from industry results}
+  Target rate: {targets}/{classified} ({rate}%)
+
+Options to find more:
+  1. "find more" — I'll generate new keywords based on which TARGET companies were found.
+     Angles to try: {list unused regeneration angles}
+     Example: targets like {top_target_domain} had Apollo keywords: {their_keywords}
+     → these keywords could find more similar companies
+  
+  2. Broaden filters — current geo: {locations}. 
+     Adding {suggested_new_geos} could yield {estimate} more companies.
+  
+  3. Try adjacent segments — targets often overlap with: {related_segments}
+  
+  4. Lower KPI — proceed with {contacts} contacts. 
+     {contacts} contacts × 4% reply rate ≈ {int(contacts * 0.04)} replies.
+
+Which approach? Or type "proceed with {contacts}" to create the campaign now.
+```
+
+**The agent MUST suggest concrete next steps based on the keyword_leaderboard data.** Never just say "not enough contacts" and stop.
