@@ -76,9 +76,39 @@ Free text:
 ```
 
 **Mode detection:**
-- `campaign=` → MODE 3. Call `find_campaign(campaign_ref)` → get project + campaign data. Call `smartlead_get_campaign(campaign_id)` → verify not STOPPED.
-- `project=` → MODE 2. Call `load_data(project, "project.yaml")` → verify `offer_approved == true`. Check segment not already used in `project.campaigns[]`.
-- Neither → MODE 1. Fresh project.
+
+- User says "add more to campaign X" / `campaign=` / references SmartLead campaign URL → **MODE 3** (append).
+  ```
+  # Extract campaign_id from URL or argument
+  # e.g. "https://app.smartlead.ai/app/email-campaign/3137079/analytics" → 3137079
+  
+  # Try local lookup first
+  local = find_campaign(campaign_ref)
+  
+  If local found:
+    → project + campaign data from local workspace
+    
+  If local NOT found (external campaign — created outside MCP):
+    → Import it: call smartlead_get_campaign(campaign_id) to verify it exists
+    → Create local project: derive slug from campaign name
+      create_project(campaign_name)
+    → Create local campaign.yaml:
+      save_data(project, f"campaigns/{slug}/campaign.yaml", {
+        campaign_id, name: from SmartLead, status: from SmartLead,
+        sending_account_ids: from SmartLead, segment: from user input,
+        run_ids: [], total_leads_pushed: existing lead count
+      })
+    → If user provided offer URL (e.g. inxy.io), scrape and save to project.yaml
+    → Now proceed as normal Mode 3 (local data exists)
+  
+  Call smartlead_get_campaign(campaign_id) → verify not STOPPED.
+  ```
+
+- `project=` → **MODE 2**. Call `load_data(project, "project.yaml")` → verify `offer_approved == true`. Check segment not already used in `project.campaigns[]`.
+
+- Neither → **MODE 1**. Fresh project.
+
+**Key: the agent must recognize "add more to this campaign" even without explicit `campaign=` parameter.** If the user references a SmartLead campaign URL and says "add more" / "gather more" / "append" → it's Mode 3.
 
 ## Initialize State
 
