@@ -110,6 +110,27 @@ Free text:
 
 **Key: the agent must recognize "add more to this campaign" even without explicit `campaign=` parameter.** If the user references a SmartLead campaign URL and says "add more" / "gather more" / "append" → it's Mode 3.
 
+## Mandatory Questions — RESOLVE IMMEDIATELY
+
+**These are REQUIRED for the pipeline. Check the user's input FIRST — the document or /launch args may already contain the answers. Only ask if missing.**
+
+**Check user input for:**
+```
+1. Email accounts: look for "accounts with X", "use X accounts", sender name, domain hint
+   → If found: smartlead_list_accounts() + smartlead_search_accounts(hint)
+   → If NOT found: ASK "Which email accounts should I use? (e.g. 'accounts with Rinat')"
+
+2. Blacklist: look for SmartLead campaign URL, "blacklist campaign X", campaign ID
+   → If found: pipeline_import_blacklist(project, campaign_id)
+   → If NOT found: ASK "Any existing campaigns to blacklist? (URL/name/ID, or 'skip')"
+```
+
+**Mode 3: skip both** — accounts already on campaign, blacklist = auto-dedup from campaign export.
+
+**The document should provide these.** A good outreach plan includes sender info and prior campaign context. If the user's document has this info, extract it — don't re-ask. Only ask when the input is genuinely missing this information.
+
+**Cache accounts in parallel** with offer extraction — `smartlead_list_accounts()` can run alongside `scrape_website()` in the same tool call batch.
+
 ## Initialize State
 
 **Before ANY work**, create state.yaml with ALL required fields:
@@ -293,48 +314,10 @@ This is the REAL target rate from actual data — not a guess. Show examples in 
 apollo_estimate_cost(target_count=kpi, contacts_per_company=3, target_rate=probe_target_rate)
 ```
 
-**Resolve email accounts — MANDATORY, ask user if not in args:**
+**Email accounts + blacklist: already asked upfront (see "Mandatory Questions" section above).**
+By this point, you already have: selected account IDs + blacklist saved to project.
 
-**NEVER auto-select accounts from the document. If the user provided an account hint in their /launch input (e.g. "accounts with Rinat"), use that. If not, STOP and ask.**
-
-```
-# Step 1: Cache all accounts
-smartlead_list_accounts()
-
-# Step 2: Check if user provided account hint in /launch arguments
-If "accounts with X" or "accounts from X" in args:
-  → smartlead_search_accounts("X") → show matches, include in strategy doc
-Else:
-  → STOP HERE. Ask the user BEFORE showing the strategy document:
-    "Which email accounts should I use for sending?
-     Example: 'accounts with Sally', 'danila@', 'getsally.io domain'
-     I have {N} accounts across {M} domains."
-  → Wait for user response
-  → smartlead_search_accounts(user_response) → get matching IDs
-
-# Step 3: Confirm selection
-Show: "Found {N} accounts matching '{hint}': {top emails}. Using these."
-```
-
-**This is a HARD REQUIREMENT. Do NOT proceed to Checkpoint 1 without account selection from the user.**
-
-**Resolve blacklist — MANDATORY, ask user if not in args:**
-
-**Blacklist is MANDATORY. If the user already provided blacklist info in their /launch input (e.g. a SmartLead campaign URL), use that — don't re-ask. Only ask if they didn't mention it.**
-
-```
-# Ask the user BEFORE showing the strategy document:
-"Do you have any existing SmartLead campaigns for this segment that I should blacklist?
- This prevents contacting people you've already reached out to.
- Options:
- - Campaign names or IDs to blacklist (e.g. 'ES Fintech Q1', '3070919')
- - 'skip' if this is your first campaign for this segment"
-
-If user provides campaign names/IDs/URLs:
-  → Extract campaign_id from SmartLead URL if provided:
-    "https://app.smartlead.ai/app/email-campaign/3137079/analytics" → campaign_id = 3137079
-  → ONE deterministic tool call — exports + saves project blacklist:
-    pipeline_import_blacklist(project=project_slug, campaign_id=3137079)
+If user provides campaign for blacklist:
     → Exports leads, saves to projects/{project}/blacklist.json automatically
   → Show: "Blacklisted {N} domains from campaign {name} (project-level)."
 
