@@ -7,6 +7,11 @@ argument-hint: "[website/file/text] — e.g. 'https://acme.com payments in US' o
 
 Full pipeline: input → gather → qualify → SmartLead campaign. **Two human checkpoints, everything else autonomous.**
 
+**Read before starting:**
+- **pipeline-state** skill — run file entity format (FilterSnapshot, Company, Contact)
+- **io-state-safe** skill — state.yaml schema and validation rules
+- **quality-gate** skill — checkpoint thresholds and keyword regeneration angles
+
 ## Parse Arguments
 
 ```
@@ -289,55 +294,56 @@ run.rounds[]: {
 
 **Stop adding new keyword batches when 400 unique companies reached in this round.**
 
-### Scrape (deterministic — use MCP tool directly, NOT agents)
+### Streaming: scrape → classify → people (don't wait for full phase completion)
 
-**Scraping is deterministic. Call `scrape_website` MCP tool directly in parallel batches.**
-Do NOT spawn agents for scraping — agents use Fetch/WebFetch which bypasses the Apify proxy.
+**pipeline_spec.md rule: every phase starts IMMEDIATELY when input is available.**
+- 1 company found in Apollo → scrape it NOW
+- 1 website scraped → classify it NOW
+- 1 target confirmed → start people extraction NOW
 
-```
-# Scrape in batches of 15-20 parallel tool calls
-For each batch of domains:
-  scrape_website("https://" + domain_1)   # all in parallel
-  scrape_website("https://" + domain_2)
-  ...
-  scrape_website("https://" + domain_20)
-```
+**In practice with Claude Code**: process in overlapping mini-batches, not sequential full phases.
 
-Store each result: `company.scrape = {status: "success"|"failed", text_length: N, text: "..."}`
-
-### Classify (AI reasoning — spawn agents for parallel batch analysis)
-
-After scraping, spawn agents to classify the **already-scraped** text. Agents do the AI reasoning part only — they read scraped text from the run file, they don't scrape.
+**STREAMING LOOP** (repeat until KPI met or 400 companies processed):
 
 ```
-Use the Agent tool:
-  prompt: "You are a company qualifier. Read the company-qualification skill.
-    Project: {project_slug}
-    Offer: {primary_offer}
-    Segments: {segments with keywords}
-    Exclusions: {exclusion_list}
-    
-    For each company below, classify from the SCRAPED TEXT (already provided).
-    NEVER re-scrape — the text is already here. NEVER use Apollo industry label.
-    Via negativa: focus on EXCLUDING non-matches.
-    Output per company: is_target, confidence (0-100), segment (CAPS_SNAKE_CASE), reasoning
-    Normalize company name: strip ', Inc.', ', LLC', ', Ltd.', ', Corp.', ', GmbH'
-    
-    Companies to classify:
-    {domain_1}: {scraped_text_1[:2000]}
-    {domain_2}: {scraped_text_2[:2000]}
-    ...
-    
-    Save results: save_data('{project}', 'runs/{run_id}.json', 
-      {companies: {domain: {classification: {...}, name_normalized: ...}}}, 
-      mode='merge')"
-  subagent_type: general-purpose
-  run_in_background: true
+MINI-BATCH (20 companies at a time):
+
+1. SCRAPE — call scrape_website MCP tool directly (NOT agents, NOT Fetch):
+   scrape_website("https://" + domain_1)   # 15-20 in parallel
+   scrape_website("https://" + domain_2)
+   ...
+   Store: company.scrape = {status, text_length, text}
+
+2. CLASSIFY — inline (you ARE the LLM, read company-qualification skill rules):
+   For each successfully scraped company in this batch:
+   - Read scraped text, apply via negativa rules
+   - Output: is_target, confidence (0-100), segment, reasoning
+   - Normalize company name (strip Inc., LLC, etc.)
+   Store: company.classification = {is_target, confidence, segment, reasoning}
+
+3. PEOPLE — for targets in this batch, start extraction immediately:
+   For each target (is_target == true) in this mini-batch:
+     apollo_search_people(domain=target.domain, person_seniorities=[...])  # FREE
+     apollo_enrich_people(person_ids=[top_3])  # 1 credit/person
+   Store contacts, update totals.
+
+4. KPI CHECK — after each mini-batch:
+   If total_verified_contacts >= kpi.target_people → STOP, proceed to Step 6
+   If credits_used >= max_credits → STOP with warning
+
+5. SAVE — update run file after each mini-batch:
+   save_data(project, "runs/{run_id}.json", {companies: {...}, contacts: [...], totals: {...}}, mode="merge")
 ```
 
-Spawn 2-3 classification agents in parallel, each processing ~50 companies' scraped text.
+**Why inline classification (not agents)?**
+- Each mini-batch is 20 companies. You classify them as you read the scraped text.
+- Spawning agents for 20 companies adds overhead (agent startup, context loading).
+- Agents are valuable for 100+ companies. For streaming mini-batches, inline is faster.
+- You already have the company-qualification skill loaded — just apply the rules.
 
-**When agents complete**, read the updated run file to check results:
+**When to spawn classification agents instead**: If you gathered 400 companies and want to classify all at once (non-streaming mode), spawn 3-4 agents each processing ~100 companies' scraped text. Pass the text in the prompt, NOT domains to scrape.
+
+**After all mini-batches complete**, compute totals:
 ```
 run = load_data(project, "runs/{run_id}.json")
 targets = count companies where classification.is_target == true
@@ -346,8 +352,6 @@ total_scraped = count companies where scrape.status == "success"
 total_gathered = count all companies
 target_rate = targets / total_classified
 scrape_success_rate = total_scraped / total_gathered
-high_confidence_targets = count targets where confidence >= 80
-high_confidence_rate = high_confidence_targets / targets
 ```
 
 ### Quality gate check (4 thresholds)
@@ -405,46 +409,36 @@ Update state: `save_data(project, "state.yaml", {..., phase_states: {round_loop:
 
 ---
 
-## Step 5: Extract People (AUTONOMOUS)
+## Step 5: People Extraction Details
 
-Update state: `save_data(project, "state.yaml", {..., current_phase: "people_extraction", phase_states: {people_extraction: "in_progress"}})`
+People extraction runs INSIDE Step 4's streaming loop (sub-step 3). These are the detailed rules:
 
-For each target company (parallel, batches of 5-10):
-
-**Round 1 (FREE search → PAID enrichment):**
+**FREE search → PAID enrichment per target:**
 ```
-# FREE — no credits. Returns name, title, linkedin, but NOT email.
-people = apollo_search_people(
-  domain=company.domain,
-  person_seniorities=["owner","founder","c_suite","vp","head","director"]
-)
-```
-Pick top 3 candidates matching target_roles from offer. Priority: owner > founder > c_suite > vp > head > director.
+# FREE — no credits
+people = apollo_search_people(domain=target.domain, person_seniorities=["owner","founder","c_suite","vp","head","director"])
 
-```
-# 1 credit per person. Returns verified email.
+# Pick top 3 matching target_roles. Priority: owner > founder > c_suite > vp > head > director
+
+# 1 credit per person
 enriched = apollo_enrich_people(person_ids=[top_3_ids])
 ```
 
-**Retry logic** (if <3 verified emails after Round 1):
-- Round 2: try next 3 candidates from search results (different people, same company)
-- Round 3: try remaining candidates
-- Max 3 enrichment rounds per company, max 12 credits per company total
-- If still <3 after 3 rounds → accept what you have, move on
+**Retry logic** (if <3 verified emails):
+- Round 2: next 3 candidates (different people, same company)
+- Round 3: remaining candidates
+- Max 3 enrichment rounds, 12 credits per company
+- If still <3 → accept what you have, move on
 
-**Side effect**: `apollo_enrich_people` (bulk_match) may return company's `industry_tag_id` — this auto-extends taxonomy knowledge for future runs.
+**Contact dedup**: skip duplicate emails within run. Mode 3: also skip `seen_emails`.
 
-**Contact dedup:**
-- Within this run: skip duplicate emails
-- Mode 3: also skip emails in `seen_emails` (from campaign export)
+**Side effect**: `apollo_enrich_people` may return `industry_tag_id` → auto-extends taxonomy.
 
-**KPI stop condition**: After EACH enrichment batch, count total verified contacts.
-**Stop immediately when total_verified >= kpi target.** Don't finish the current batch unnecessarily.
-
+**When KPI met**, save everything:
 ```
 save_data(project, "contacts.json", all_contacts, mode="write")
-save_data(project, "runs/run-001.json", {..., contacts: all_contacts, totals: {kpi_met: true}}, mode="merge")
-save_data(project, "state.yaml", {..., phase_states: {people_extraction: "completed"}})
+save_data(project, "runs/{run_id}.json", {..., contacts: all_contacts, totals: {kpi_met: true}}, mode="merge")
+save_data(project, "state.yaml", {..., phase_states: {round_loop: "completed", people_extraction: "completed"}})
 ```
 
 ---
