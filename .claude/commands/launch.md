@@ -545,11 +545,16 @@ num_agents = 0 if count < 30 else min(2 + (count - 30) // 100, 5)
 chunk_size = count // num_agents if num_agents > 0 else count
 ```
 
-**For each agent, spawn in parallel:**
+**CRITICAL: Each agent writes to its OWN chunk file, NOT the run file.**
+
+Run #3 lost 45 of 73 targets because 4 agents wrote to the same run file concurrently.
+Race condition: last agent overwrites chunks 1-3. Only chunk 4 survives.
+
+**For each agent N, spawn in parallel:**
 
 ```
 Agent(
-  prompt: "You are a company classifier. Your ONLY job is to classify each company below.
+  prompt: "You are a company classifier. Classify each company below.
 
     CONTEXT:
     Offer: {primary_offer}
@@ -558,15 +563,15 @@ Agent(
 
     RULES:
     - Classify from the TEXT BELOW only. NEVER re-scrape. NEVER call scrape_website or Fetch.
-    - Via negativa: focus on EXCLUDING non-matches (competitors, wrong industry, B2C, too large)
-    - For each company output: is_target (bool), confidence (0-100), segment (CAPS_SNAKE_CASE), reasoning (1 sentence)
-    - Call normalize_company_name(name) for each company name
-    - After classifying ALL companies, call save_data ONCE with all results:
-      save_data('{project}', 'runs/{run_id}.json',
-        {companies: {domain: {classification: {is_target, confidence, segment, reasoning}, name_normalized: X}}},
-        mode='merge')
+    - Via negativa: focus on EXCLUDING non-matches
+    - For each: is_target (bool), confidence (0-100), segment (CAPS_SNAKE_CASE), reasoning (1 sentence)
+    - For non-targets: set segment to the REJECTION reason (e.g. B2C_CONSUMER, COMPETITOR)
 
-    COMPANIES TO CLASSIFY ({chunk_size}):
+    SAVE TO CHUNK FILE (NOT the run file!):
+      save_data('{project}', 'classify_chunk_{N}.json',
+        {domain: {classification: {is_target, confidence, segment, reasoning}, name_normalized: cleaned_name}})
+
+    COMPANIES ({chunk_size}):
     1. domain1.com | {scraped_text}
     2. domain2.com | {scraped_text}
     ..."
@@ -577,8 +582,37 @@ Agent(
 )
 ```
 
-**Spawn ALL agents in ONE message (parallel tool calls). Wait for all to complete.**
-**After completion**, read updated run file to get classification results.
+**Spawn ALL agents in ONE message. Wait for all to complete.**
+
+**After ALL agents done — MERGE chunks into run file (sequential, no race):**
+
+```
+# Orchestrator merges — NOT agents. Zero race condition.
+all_classified = {}
+for i in range(1, num_agents + 1):
+  chunk = load_data(project, f"classify_chunk_{i}.json")
+  if chunk.success:
+    all_classified.update(chunk.data)
+    
+# Load run file (has companies from pipeline_gather_and_scrape)
+run = load_data(project, f"runs/{run_id}.json")
+
+# Merge classifications INTO existing company records
+for domain, cls_data in all_classified.items():
+  if domain in run.data.companies:
+    run.data.companies[domain].update(cls_data)
+  else:
+    run.data.companies[domain] = cls_data
+
+# Count results
+targets = sum(1 for c in run.data.companies.values() if c.get("classification", {}).get("is_target"))
+total_classified = sum(1 for c in run.data.companies.values() if c.get("classification"))
+
+# ONE atomic write — all data preserved
+save_data(project, f"runs/{run_id}.json", run.data, mode="write")
+```
+
+This guarantees ALL classified companies survive. Zero data loss.
 
 Record: `round.timestamps.classify_completed = "{now}"`
 
