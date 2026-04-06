@@ -134,6 +134,17 @@ Works with plain text too.
 
 Reuses the same project, same email accounts, same sequence. Gathers 100 MORE contacts using smarter keywords (seeded from previous run's best performers). Deduplicates against existing campaign leads. Pushes only new contacts.
 
+Also works with campaigns created outside MCP — just reference the SmartLead URL:
+
+```
+I want to add more affiliate networks to this campaign:
+https://app.smartlead.ai/app/email-campaign/3137079/analytics
+
+Offer them inxy.io. Target companies like Adsterra, PropellerAds, TrafficStars.
+```
+
+The agent auto-imports the external campaign, scrapes the offer, enriches example companies for keyword seeds, gathers new contacts, deduplicates against existing leads, and pushes only new ones to the same campaign.
+
 Previous knowledge is fully reused:
 - Keywords that found the most targets are tried first
 - Companies already gathered are skipped (no wasted credits)
