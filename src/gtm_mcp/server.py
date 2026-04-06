@@ -385,6 +385,8 @@ async def pipeline_save_contacts(
 
 @mcp.tool()
 async def pipeline_gather_and_scrape(
+    project: str,
+    run_id: str,
     keywords: list[str],
     industry_tag_ids: list[str],
     locations: list[str],
@@ -393,14 +395,12 @@ async def pipeline_gather_and_scrape(
     max_companies: int = 400,
     scrape_concurrent: int = 100,
     max_pages_per_stream: int = 5,
-    project: str = "",
-    run_id: str = "",
 ) -> dict:
     """Atomic gather + scrape pipeline — ONE tool call, full streaming inside.
 
+    project + run_id REQUIRED — auto-saves companies + requests + round data to run file.
     Fires all Apollo searches in parallel (1 keyword/industry per request).
     As domains arrive from Apollo, immediately queues them for scraping (100 concurrent Apify).
-    Auto-saves companies + requests + round data to run file (if project + run_id provided).
     Returns scraped_texts dict for classification agent prompts.
 
     Typical: 300-400 companies gathered + scraped in 30-90 seconds.
@@ -409,7 +409,7 @@ async def pipeline_gather_and_scrape(
     return await _impl(
         keywords, industry_tag_ids, locations, employee_ranges,
         funding_stages=funding_stages,
-        project=project, run_id=run_id,
+        project=project, run_id=run_id,  # REQUIRED — auto-saves to run file
         max_companies=max_companies,
         scrape_concurrent=scrape_concurrent,
         max_pages_per_stream=max_pages_per_stream,

@@ -29,8 +29,8 @@ async def pipeline_gather_and_scrape(
     scrape_concurrent: int = 100,
     max_pages_per_stream: int = 5,
     *,
-    project: str = "",
-    run_id: str = "",
+    project: str,
+    run_id: str,
     config=None,
     workspace=None,
 ) -> dict:
