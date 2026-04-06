@@ -6,6 +6,8 @@ Zero LLM calls inside the server. Your AI agent (Claude, GPT, etc.) does all the
 
 ## How It Works
 
+Example: launching a fintech outreach campaign targeting SmartLead as the email sequencer.
+
 ```
 You: /launch outreach-plan-fintech.md
 
@@ -26,7 +28,7 @@ Agent: "Campaign ready (DRAFT). 102 contacts uploaded.
 You: activate
 ```
 
-Two human checkpoints. Everything else autonomous.
+Two human checkpoints. Everything else autonomous. The target sequencer in this example is SmartLead — other destinations (Instantly, GetSales for LinkedIn) follow the same pattern.
 
 ## Prerequisites
 
@@ -188,16 +190,74 @@ Inspired by [claude-pipe](https://github.com/bluzir/claude-pipe) — the command
 
 ## Tools (37)
 
-| Category | Count | Examples |
-|----------|:-----:|---------|
-| Config | 2 | `get_config`, `set_config` |
-| Projects | 6 | `create_project`, `save_data`, `load_data`, `find_campaign`, `get_project_costs` |
-| Blacklist | 3 | `blacklist_check`, `blacklist_add`, `blacklist_import` |
-| Apollo | 6 | `apollo_search_companies`, `apollo_search_people`, `apollo_enrich_people`, `apollo_get_taxonomy` |
-| Scraping | 1 | `scrape_website` |
-| SmartLead | 12 | `smartlead_create_campaign`, `smartlead_add_leads`, `smartlead_activate_campaign`, `smartlead_send_test_email` |
-| GetSales | 4 | `getsales_create_flow`, `getsales_add_leads`, `getsales_activate_flow` |
-| Google Sheets | 3 | `sheets_create`, `sheets_export_contacts`, `sheets_read` |
+### Config (2)
+| Tool | Description |
+|------|-------------|
+| `get_config` | Get configuration status (which keys are set) |
+| `set_config` | Set a configuration value |
+
+### Projects & Workspace (6)
+| Tool | Description |
+|------|-------------|
+| `create_project` | Create a new project |
+| `list_projects` | List all projects |
+| `save_data` | Save data to project workspace (write/merge/append/versioned) |
+| `load_data` | Load data from project workspace |
+| `find_campaign` | Find a campaign by SmartLead ID or slug across all projects |
+| `get_project_costs` | Cost breakdown per project — totals, per-campaign, per-run |
+
+### Blacklist (3)
+| Tool | Description |
+|------|-------------|
+| `blacklist_check` | Check if a domain is blacklisted |
+| `blacklist_add` | Add domains to the global blacklist |
+| `blacklist_import` | Import blacklist from a file |
+
+### Apollo (6)
+| Tool | Description |
+|------|-------------|
+| `apollo_search_companies` | Search companies by keywords, industries, location, size |
+| `apollo_search_people` | Search people at a company (FREE — no credits) |
+| `apollo_enrich_people` | Enrich people with verified emails (1 credit/person) |
+| `apollo_enrich_companies` | Bulk enrich companies by domain |
+| `apollo_get_taxonomy` | Get all 84 Apollo industries with tag_ids |
+| `apollo_estimate_cost` | Estimate credits needed for a pipeline run |
+
+### Scraping (1)
+| Tool | Description |
+|------|-------------|
+| `scrape_website` | Scrape website text via Apify proxy with fallback |
+
+### SmartLead (12)
+| Tool | Description |
+|------|-------------|
+| `smartlead_list_campaigns` | List all campaigns |
+| `smartlead_list_accounts` | List all email accounts (paginated, handles 2000+) |
+| `smartlead_create_campaign` | Create campaign with schedule, settings, accounts (DRAFT) |
+| `smartlead_set_sequence` | Set email sequence steps with A/B variant support |
+| `smartlead_add_leads` | Add leads to a campaign with custom fields |
+| `smartlead_get_campaign` | Get campaign details (accounts, sequences, status) |
+| `smartlead_export_leads` | Export all leads from a campaign (for dedup) |
+| `smartlead_sync_replies` | Sync replied leads from a campaign |
+| `smartlead_send_reply` | Send a reply to a lead |
+| `smartlead_send_test_email` | Send test email to verify sequence before activation |
+| `smartlead_activate_campaign` | Activate campaign — start sending (requires confirmation) |
+| `smartlead_pause_campaign` | Pause an active campaign |
+
+### GetSales (4)
+| Tool | Description |
+|------|-------------|
+| `getsales_list_profiles` | List LinkedIn profiles |
+| `getsales_create_flow` | Create LinkedIn outreach flow |
+| `getsales_add_leads` | Add leads to a GetSales flow |
+| `getsales_activate_flow` | Activate flow — start LinkedIn outreach |
+
+### Google Sheets (3)
+| Tool | Description |
+|------|-------------|
+| `sheets_create` | Create a Google Sheet on Shared Drive with contact headers |
+| `sheets_export_contacts` | Export contacts to sheet (with classification reasoning) |
+| `sheets_read` | Read sheet data (for blacklist import, company lists) |
 
 ## Data Storage
 
