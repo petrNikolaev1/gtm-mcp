@@ -359,92 +359,58 @@ existing = smartlead_export_leads(campaign_id)
 seen_emails = {lead.email for lead in existing.leads}
 ```
 
-### Round loop
+### Phase A: GATHER + SCRAPE — one atomic streaming tool call (~30-90s)
 
-**CRITICAL: 1 keyword per request, 1 tag_id per request. NEVER combine.** Combining changes Apollo's ranking and yields fewer unique companies.
-
-**Pagination rules per keyword/industry stream:**
-- Max 5 pages per stream (diminishing returns beyond that)
-- If page 1 returns <10 companies → stop that stream immediately (low yield)
-- If 3 consecutive pages return 0 new unique companies → stream exhausted, stop
-- Each page = 1 Apollo credit
-
-**Funding cascade:** If funding filter specified in offer:
-- Run BOTH funded AND unfunded variants of each keyword/industry simultaneously
-- If funded stream exhausted → continue unfunded only
-- Unfunded often has sparse pagination — that's expected, not an error
-
-**Execute in keyword batches** (10 keywords per batch to avoid overwhelming):
-
-BATCH 1 — first 10 keywords + all tag_ids (parallel):
-```
-# Each as a SEPARATE tool call, all in parallel:
-apollo_search_companies({q_organization_keyword_tags: ["keyword1"], organization_locations: [...], organization_num_employees_ranges: [...]})
-apollo_search_companies({q_organization_keyword_tags: ["keyword2"], ...})
-...
-apollo_search_companies({organization_industry_tag_ids: ["tag_id_1"], ...})
-...
-```
-
-Dedup by domain across ALL results. Skip `seen_domains` (Mode 3). Probe companies from Step 2 are already gathered — skip page 1 for probed filters.
-
-**IMPORTANT: Track EVERY Apollo request.** After each `apollo_search_companies` call returns, IMMEDIATELY append to `run.requests[]`:
-```
-save_data(project, "runs/run-001.json", {
-  requests: [{
-    id: "req-001",
-    round_id: "round-001",
-    filter_snapshot_id: "fs-001",
-    type: "keyword",                    # or "industry"
-    filter_value: "payment gateway",    # or tag_id
-    funded: false,
-    page: 1,
-    result: {raw_returned: 100, new_unique: 72, duplicates: 28, credits_used: 1}
-  }]
-}, mode="merge")
-```
-This is CRITICAL for per-keyword tracking and Mode 3 seeding. Do NOT skip this.
-
-**Track company provenance**: each company gets `discovery: {found_by_requests: ["req-001", "req-005"]}`.
-
-**After all gathering + scraping + classification in a round, save the Round entity:**
-```
-save_data(project, "runs/run-001.json", {
-  rounds: [{
-    id: "round-001",
-    filter_snapshot_id: "fs-001",
-    status: "completed",
-    gather_phase: {keywords_used: [...], request_ids: [...], unique_companies: N, credits_used: N},
-    scrape_phase: {total: N, success: N, failed: N},
-    classify_phase: {targets: N, rejected: N, target_rate: 0.27},
-    people_phase: {contacts_extracted: 0, credits_used: 0}  # updated in people extraction
-  }],
-  totals: {rounds_completed: 1, total_api_requests: N, total_credits_search: N, unique_companies: N, targets: N}
-}, mode="merge")
-```
-
-**Stop adding new keyword batches when 400 unique companies reached in this round.**
-
-### Phase A: SCRAPE — one atomic batch call (~30-60s)
-
-Record: `round.timestamps.scrape_started = "{now}"`
+**ONE tool call does ALL deterministic I/O. Streaming inside via asyncio.**
 
 ```
-all_domains = ["https://" + d for d in gathered_companies.keys()]
-results = scrape_batch(all_domains, max_concurrent=100)
+result = pipeline_gather_and_scrape(
+  keywords=approved_keywords,          # 20-30 keywords from Step 2
+  industry_tag_ids=approved_tag_ids,   # 2-3 tag_ids from Step 2
+  locations=approved_locations,
+  employee_ranges=approved_ranges,
+  funding_stages=approved_funding,     # or null
+  max_companies=400,
+  scrape_concurrent=100,
+  max_pages_per_stream=5
+)
 ```
 
-**ONE tool call. 100 concurrent Apify requests. ~30-60s for 300-400 domains.**
-Do NOT scrape one by one. Do NOT spawn agents. Do NOT use Fetch/WebFetch.
+**What happens INSIDE this one call (asyncio streaming):**
+1. Fires ALL keyword + industry Apollo searches in parallel (1 per request)
+2. If funding: funded + unfunded variants simultaneously
+3. As EACH domain arrives from Apollo → immediately queued for scraping
+4. 100 concurrent Apify scrape workers consume the queue
+5. Low-yield streams auto-stop (<10 on page 1)
+6. Stops at 400 unique companies
+7. Returns: companies with scraped text + all request tracking + timestamps
 
-Store results in run file:
+**This is the magnum-opus streaming pattern implemented as one MCP tool.**
+
+The result contains:
+- `data.companies`: {domain: {name, apollo_data, scrape: {status, text, text_length}}}
+- `data.requests`: [{type, filter_value, funded, page, result: {raw, new_unique, credits}}]
+- `data.stats`: {gather_seconds, scrape_seconds, total_seconds, total_credits}
+
+Save to run file:
 ```
 save_data(project, "runs/{run_id}.json", {
-  companies: {domain: {...existing, scrape: {status, text_length, text}} for each result}
+  companies: result.data.companies,
+  requests: result.data.requests,
+  rounds: [{
+    id: "round-001",
+    timestamps: {
+      gather_started: result.data.stats.gather_started,
+      gather_completed: result.data.stats.gather_completed,
+      scrape_started: result.data.stats.scrape_started,
+      scrape_completed: result.data.stats.scrape_completed
+    },
+    gather_phase: {total_requests: N, unique_companies: N, credits_used: N},
+    scrape_phase: {total: N, success: N, failed: N, concurrent: 100}
+  }],
+  totals: {total_credits_search: N, unique_companies: N}
 }, mode="merge")
 ```
-
-Record: `round.timestamps.scrape_completed = "{now}"`
 
 ### Phase B: CLASSIFY — spawn agents for pre-scraped text (~3-5 min)
 

@@ -1,4 +1,4 @@
-"""GTM-MCP Server — 41 thin tools, zero LLM calls. stdio transport via FastMCP."""
+"""GTM-MCP Server — 43 thin tools, zero LLM calls. stdio transport via FastMCP."""
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -100,6 +100,17 @@ async def get_project_costs(project: str) -> dict:
     return {"success": True, "data": _workspace.get_project_costs(project)}
 
 
+@mcp.tool()
+async def normalize_company_name(name: str) -> dict:
+    """Normalize company name — strips Inc/LLC/Ltd/Corp/GmbH and trailing punctuation.
+
+    Use before storing in run file or pushing to SmartLead.
+    smartlead_add_leads already auto-normalizes, but use this for run file entities.
+    """
+    return {"success": True, "original": name,
+            "normalized": _workspace.normalize_company_name(name)}
+
+
 # ─── Google Sheets Tools ─────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -142,22 +153,36 @@ async def sheets_read(sheet_id: str, tab: str = "Sheet1") -> dict:
 # ─── Blacklist Tools ──────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def blacklist_check(domain: str) -> dict:
-    """Check if a domain is blacklisted."""
-    return {"success": True, "domain": domain, "blacklisted": _workspace.blacklist_check(domain)}
+async def blacklist_check(domain: str, max_age_days: int | None = None) -> dict:
+    """Check if a domain is blacklisted.
+
+    If max_age_days is set, only considers entries contacted within that window.
+    Example: max_age_days=90 means "only blacklisted if contacted in last 3 months".
+    """
+    return {"success": True, "domain": domain,
+            "blacklisted": _workspace.blacklist_check(domain, max_age_days)}
 
 
 @mcp.tool()
-async def blacklist_add(domains: list[str]) -> dict:
-    """Add domains to the global blacklist."""
-    _workspace.blacklist_add(domains)
+async def blacklist_add(
+    domains: list[str], source: str = "", campaign_name: str = "",
+    last_contact_date: str = "",
+) -> dict:
+    """Add domains to the global blacklist with temporal metadata.
+
+    source: where these came from (e.g. "smartlead_campaign", "manual")
+    campaign_name: which campaign contacted them (e.g. "ES Global Q1")
+    last_contact_date: ISO date of last contact (for time-windowed filtering)
+    """
+    _workspace.blacklist_add(domains, source=source, campaign_name=campaign_name,
+                             last_contact_date=last_contact_date)
     return {"success": True, "added": len(domains)}
 
 
 @mcp.tool()
-async def blacklist_import(file_path: str) -> dict:
+async def blacklist_import(file_path: str, source: str = "") -> dict:
     """Import domains from a file into the blacklist."""
-    count = _workspace.blacklist_import(file_path)
+    count = _workspace.blacklist_import(file_path, source=source)
     return {"success": True, "imported": count}
 
 
@@ -300,6 +325,41 @@ async def scrape_batch(urls: list[str], max_concurrent: int = 50) -> dict:
     return await _impl(urls, apify_proxy_password=proxy, max_concurrent=max_concurrent)
 
 
+# ─── Pipeline Tools ──────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def pipeline_gather_and_scrape(
+    keywords: list[str],
+    industry_tag_ids: list[str],
+    locations: list[str],
+    employee_ranges: list[str],
+    funding_stages: list[str] | None = None,
+    max_companies: int = 400,
+    scrape_concurrent: int = 100,
+    max_pages_per_stream: int = 5,
+) -> dict:
+    """Atomic gather + scrape pipeline — ONE tool call, full streaming inside.
+
+    Fires all Apollo searches in parallel (1 keyword/industry per request).
+    As domains arrive from Apollo, immediately queues them for scraping (100 concurrent Apify).
+    Returns all companies with scraped text — ready for agent classification.
+
+    This replaces calling apollo_search_companies + scrape_batch separately.
+    Streaming happens INSIDE the tool via asyncio — no round-trip overhead.
+
+    Typical: 300-400 companies gathered + scraped in 30-90 seconds.
+    """
+    from gtm_mcp.tools.pipeline import pipeline_gather_and_scrape as _impl
+    return await _impl(
+        keywords, industry_tag_ids, locations, employee_ranges,
+        funding_stages=funding_stages,
+        max_companies=max_companies,
+        scrape_concurrent=scrape_concurrent,
+        max_pages_per_stream=max_pages_per_stream,
+        config=_config,
+    )
+
+
 # ─── SmartLead Tools ──────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -384,6 +444,17 @@ async def smartlead_sync_replies(
     from gtm_mcp.tools.smartlead import smartlead_sync_replies as _impl
     return await _impl(project, campaign_slug, campaign_id,
                        config=_config, workspace=_workspace)
+
+
+@mcp.tool()
+async def smartlead_get_lead_messages(campaign_id: int, lead_id: int) -> dict:
+    """Fetch full message thread for a lead — sent emails + received replies.
+
+    Used by Tier 2 reply classification. Returns messages in chronological order
+    plus extracted latest_reply text for regex/LLM classification.
+    """
+    from gtm_mcp.tools.smartlead import smartlead_get_lead_messages as _impl
+    return await _impl(campaign_id, lead_id, config=_config)
 
 
 @mcp.tool()
