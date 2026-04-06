@@ -331,7 +331,7 @@ If user provides campaign names/IDs/URLs:
 If user provides Google Sheet URL:
   → Extract sheet_id from URL
   → sheets_read(sheet_id) → extract domain/email column
-  → blacklist_add(domains)
+  → save_data(project, "blacklist.json", {domain: {"source": "google_sheet"} for domain in domains})
 
 If user says "skip":
   → No blacklist. Show: "No blacklist applied."
