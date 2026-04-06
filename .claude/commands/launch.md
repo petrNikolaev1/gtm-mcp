@@ -212,47 +212,79 @@ Dedup by domain across ALL results. Skip `seen_domains` (Mode 3). Track which ke
 
 **Stop adding new keyword batches when 400 unique companies reached in this round.**
 
-**Scrape** each company (parallel, batches of 10-20):
+### Scrape + Classify (spawn worker agent for batch processing)
+
+For each batch of gathered companies (~50-100 at a time), **spawn a background agent** for parallel scrape+classify:
+
 ```
-scrape_website("https://" + company.primary_domain)
+Use the Agent tool:
+  prompt: "You are a company qualifier. Read the company-qualification skill.
+    Project: {project_slug}
+    Offer: {primary_offer}
+    Segments: {segments with keywords}
+    Exclusions: {exclusion_list}
+    
+    For each domain in this batch, do:
+    1. scrape_website('https://' + domain)
+    2. Classify from SCRAPED TEXT ONLY (never Apollo industry label)
+    3. Via negativa: focus on EXCLUDING non-matches
+    4. Output per company: is_target, confidence (0-100), segment (CAPS_SNAKE_CASE), reasoning
+    5. Normalize company name: strip ', Inc.', ', LLC', ', Ltd.', ', Corp.', ', GmbH'
+    
+    Domains to process: {batch_of_domains}
+    
+    Save results: save_data('{project}', 'runs/{run_id}.json', 
+      {companies: {domain: {classification: {...}, scrape: {...}, name_normalized: ...}}}, 
+      mode='merge')"
+  subagent_type: general-purpose
+  run_in_background: true
 ```
-Start scraping as soon as first batch of companies arrives — don't wait for all 400.
 
-**Classify** each scraped company using **company-qualification** skill rules:
-- Read company-qualification skill for via negativa rules
-- Classify from SCRAPED WEBSITE TEXT only — never use Apollo's industry label
-- Output: `is_target` (bool), `confidence` (0-100), `segment` (CAPS_SNAKE_CASE), `reasoning` (1-2 sentences)
-- High confidence = 80-100 (clear match/reject), Medium = 40-79 (needs context), Low = 0-39 (uncertain)
-- For medium confidence (40-70): do a 2-pass re-evaluation — re-read the text with tighter criteria
+You can spawn **multiple agents in parallel** — e.g. 3-4 agents each processing 50 companies simultaneously. This is MUCH faster than doing it inline.
 
-**After each batch of scrape+classify**, update run file:
+While agents process, continue gathering the next keyword batch if needed.
+
+**When agents complete**, read the updated run file to check results:
 ```
-save_data(project, "runs/run-001.json", {
-  ...run,
-  companies: {...existing, ...new_companies_keyed_by_domain},
-  totals: {unique_companies: N, targets: M, target_rate: M/N}
-}, mode="merge")
+run = load_data(project, "runs/{run_id}.json")
+targets = count companies where classification.is_target == true
+target_rate = targets / total_classified
 ```
 
-**KPI check after classification**: Do we have enough targets to extract 100 contacts (at 3/company, need ~34 targets)?
-- YES → proceed to Step 5 (people extraction)
-- NO, keywords remaining → load next batch of 10 keywords → continue round
-- NO, all keywords exhausted → **regenerate keywords** using quality-gate skill's 10 angles:
-  1. Product names from found targets
-  2. Technology stacks
-  3. Use cases and workflows
-  4. Buyer language
-  5. Adjacent niches
-  6. Competitor names
-  7. Industry jargon
-  8. Problem descriptions
-  9. Solution categories
-  10. Market segments
-  Max 5 regeneration cycles. Each creates a new FilterSnapshot with parent_id linking to previous.
+### Quality gate check
 
-**Track per-keyword performance** in run file: each keyword gets `unique_companies`, `targets`, `target_rate`, `credits_used`. This becomes the `keyword_leaderboard` for Mode 3 seeding.
+**After ALL scrape+classify agents complete:**
 
-**Normalize company names** before storing: strip legal suffixes (", Inc.", ", LLC", ", Ltd.", ", Corp.", ", GmbH", etc.), trim whitespace, keep original casing. Store both `name` (raw) and `name_normalized` (cleaned).
+Read the **quality-gate** skill for thresholds.
+
+```
+If target_rate >= 15% AND targets >= 34 (enough for 100 contacts at 3/company):
+  → PASS — proceed to Step 5
+
+If target_rate >= 15% BUT targets < 34:
+  → Need more companies. Load next keyword batch → gather more → spawn more agents.
+
+If target_rate < 15%:
+  → Keywords are wrong. Regenerate using quality-gate skill's 10 angles:
+    1. Product names from found targets  2. Technology stacks
+    3. Use cases and workflows           4. Buyer language  
+    5. Adjacent niches                   6. Competitor names
+    7. Industry jargon                   8. Problem descriptions
+    9. Solution categories              10. Market segments
+  → Create new FilterSnapshot (parent_id = previous)
+  → New round with fresh keywords → gather → spawn agents
+  → Max 5 regeneration cycles
+
+If all 5 regen cycles exhausted AND still < 34 targets:
+  → status: "insufficient". Report to user: "Found {N} targets ({rate}%). 
+    Not enough for 100 contacts. Options: broaden filters, lower KPI, or proceed with what we have."
+```
+
+### Track performance
+
+Per-keyword stats in run file: `unique_companies`, `targets`, `target_rate`, `credits_used`.
+This becomes `keyword_leaderboard` — sorted by `quality_score = target_rate * log(unique_companies + 1) / credits`.
+Mode 3 future runs seed from this leaderboard.
 
 Update state: `save_data(project, "state.yaml", {..., phase_states: {round_loop: "completed"}})`
 
