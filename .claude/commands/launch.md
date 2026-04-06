@@ -427,46 +427,66 @@ save_data(project, "runs/{run_id}.json", {
 }, mode="merge")
 ```
 
-### Phase B: CLASSIFY — spawn agents for pre-scraped text (~3-5 min)
+### Phase B: CLASSIFY — dynamic agent spawning with Haiku
 
 Record: `round.timestamps.classify_started = "{now}"`
 
-**If <30 scraped companies**: classify inline (agent overhead > inline time).
-**If 30-400 scraped companies**: spawn 2-3 classification agents in background.
+```
+successfully_scraped = {d: text for d, text in result.data.scraped_texts.items()}
+count = len(successfully_scraped)
+```
+
+**Dynamic agent count based on volume:**
+
+| Scraped | Method | Agents | ~Per agent |
+|---------|--------|:------:|:---------:|
+| < 30 | Inline (you classify directly) | 0 | — |
+| 30-100 | Spawn agents | 2 | ~50 |
+| 100-200 | Spawn agents | 3 | ~65 |
+| 200-300 | Spawn agents | 4 | ~75 |
+| 300-400 | Spawn agents | 5 | ~80 |
+
+**Model: Haiku.** Classification is rule-application (via negativa), not creative reasoning. Haiku is fast, cheap, and follows structured rules perfectly.
 
 ```
-# Split scraped companies into chunks for parallel agents
-successfully_scraped = [c for c in companies if c.scrape.status == "success"]
-chunk_size = len(successfully_scraped) // 3
+num_agents = 0 if count < 30 else min(2 + (count - 30) // 100, 5)
+chunk_size = count // num_agents if num_agents > 0 else count
+```
 
+**For each agent, spawn in parallel:**
+
+```
 Agent(
-  prompt: "Classify these companies. Read the company-qualification skill.
+  prompt: "You are a company classifier. Your ONLY job is to classify each company below.
+
+    CONTEXT:
     Offer: {primary_offer}
-    Segments: {segments}
+    Segments: {segments with names}
     Exclusions: {exclusion_list}
-    
-    RULES: classify from the TEXT BELOW only. Never re-scrape. Never use Fetch.
-    Only call save_data to write results.
-    
-    Companies:
-    1. domain1.com | {scraped_text[:2000]}
-    2. domain2.com | {scraped_text[:2000]}
-    ... (up to 130 companies)
-    
-    For each: is_target (bool), confidence (0-100), segment (CAPS), reasoning (1 sentence)
-    Normalize name: strip Inc/LLC/Ltd/Corp/GmbH
-    
-    save_data('{project}', 'runs/{run_id}.json',
-      {companies: {domain: {classification: {is_target, confidence, segment, reasoning}, name_normalized: X}}},
-      mode='merge')"
+
+    RULES:
+    - Classify from the TEXT BELOW only. NEVER re-scrape. NEVER call scrape_website or Fetch.
+    - Via negativa: focus on EXCLUDING non-matches (competitors, wrong industry, B2C, too large)
+    - For each company output: is_target (bool), confidence (0-100), segment (CAPS_SNAKE_CASE), reasoning (1 sentence)
+    - Call normalize_company_name(name) for each company name
+    - After classifying ALL companies, call save_data ONCE with all results:
+      save_data('{project}', 'runs/{run_id}.json',
+        {companies: {domain: {classification: {is_target, confidence, segment, reasoning}, name_normalized: X}}},
+        mode='merge')
+
+    COMPANIES TO CLASSIFY ({chunk_size}):
+    1. domain1.com | {scraped_text}
+    2. domain2.com | {scraped_text}
+    ..."
+
+  model: haiku
   subagent_type: general-purpose
   run_in_background: true
 )
 ```
 
-**Spawn all agents simultaneously. Each has implicit timeout (Claude Code ~10 min).**
-
-Wait for all agents to complete. Read updated run file.
+**Spawn ALL agents in ONE message (parallel tool calls). Wait for all to complete.**
+**After completion**, read updated run file to get classification results.
 
 Record: `round.timestamps.classify_completed = "{now}"`
 
