@@ -36,7 +36,15 @@ Free text:
 existing_state = load_data(project, "state.yaml")
 If exists and status != "completed":
   → Show progress, ask "Resume from {current_phase}?"
-  → If yes: skip completed/skipped steps, pick up from first pending
+  → If yes: skip completed/skipped steps
+    → For "in_progress" phases: load run file, check what's already done:
+      - round_loop in_progress: read run.companies{} → already gathered/scraped/classified
+        companies are KEPT. Resume from next keyword batch, don't re-gather.
+      - people_extraction in_progress: read run.contacts[] → already extracted contacts
+        are KEPT. Resume from next target company, don't re-enrich.
+      - campaign_push in_progress: check if campaign already created in SmartLead
+        → if yes, skip creation, just push remaining leads.
+    → This prevents wasting Apollo credits on re-doing completed work within a phase.
   → If no: archive old state, start fresh
 ```
 
@@ -208,7 +216,37 @@ apollo_search_companies({organization_industry_tag_ids: ["tag_id_1"], ...})
 ...
 ```
 
-Dedup by domain across ALL results. Skip `seen_domains` (Mode 3). Track which keyword/industry found each company. Probe companies from Step 2 are already gathered — skip page 1 for probed filters.
+Dedup by domain across ALL results. Skip `seen_domains` (Mode 3). Probe companies from Step 2 are already gathered — skip page 1 for probed filters.
+
+**Track EVERY Apollo request** in the run file as an APIRequest entity:
+```
+For each apollo_search_companies call, record in run.requests[]:
+{
+  id: "req-{NNN}",              # sequential within run
+  round_id: "round-001",
+  filter_snapshot_id: "fs-001",
+  type: "keyword" | "industry",
+  filter_value: "payment gateway" | "5567cd82...",
+  funded: true | false,
+  page: 1,
+  result: {raw_returned: 100, new_unique: 72, duplicates: 28, credits_used: 1}
+}
+```
+
+**Track each company's provenance**: `company.discovery.found_by_requests = ["req-003", "req-017"]` — which keyword/industry requests found it.
+
+**Wrap each gather→scrape→classify cycle in a Round**:
+```
+run.rounds[]: {
+  id: "round-001",
+  filter_snapshot_id: "fs-001",
+  status: "completed",
+  gather_phase: {keywords_used: [...], request_ids: [...], unique_companies: N, credits_used: N},
+  scrape_phase: {total: N, success: N, failed: N},
+  classify_phase: {targets: N, rejected: N, target_rate: 0.27},
+  people_phase: {contacts_extracted: N, credits_used: N}   # filled in Step 5
+}
+```
 
 **Stop adding new keyword batches when 400 unique companies reached in this round.**
 
@@ -248,23 +286,45 @@ While agents process, continue gathering the next keyword batch if needed.
 ```
 run = load_data(project, "runs/{run_id}.json")
 targets = count companies where classification.is_target == true
+total_classified = count companies where classification exists
+total_scraped = count companies where scrape.status == "success"
+total_gathered = count all companies
 target_rate = targets / total_classified
+scrape_success_rate = total_scraped / total_gathered
+high_confidence_targets = count targets where confidence >= 80
+high_confidence_rate = high_confidence_targets / targets
 ```
 
-### Quality gate check
+### Quality gate check (4 thresholds)
 
-**After ALL scrape+classify agents complete:**
-
-Read the **quality-gate** skill for thresholds.
+**After ALL scrape+classify agents complete**, check ALL of these:
 
 ```
-If target_rate >= 15% AND targets >= 34 (enough for 100 contacts at 3/company):
+1. Scrape success rate >= 60%
+   FAIL → warn: "{N}% scrape failures. Check if Apify proxy is configured."
+   (Continue anyway — classify what we have)
+
+2. Target rate >= 15%
+   FAIL → keywords are wrong → regenerate (see below)
+
+3. Targets >= 34 (enough for 100 contacts at 3/company)
+   FAIL → need more companies → next keyword batch
+
+4. High-confidence rate >= 50% (confidence >= 80 in >50% of targets)
+   FAIL → warn: "Low classification confidence. Consider providing more
+   specific exclusion rules." (Continue anyway — people extraction will verify)
+```
+
+**Decision matrix:**
+
+```
+target_rate >= 15% AND targets >= 34:
   → PASS — proceed to Step 5
 
-If target_rate >= 15% BUT targets < 34:
+target_rate >= 15% BUT targets < 34:
   → Need more companies. Load next keyword batch → gather more → spawn more agents.
 
-If target_rate < 15%:
+target_rate < 15%:
   → Keywords are wrong. Regenerate using quality-gate skill's 10 angles:
     1. Product names from found targets  2. Technology stacks
     3. Use cases and workflows           4. Buyer language  
@@ -419,16 +479,52 @@ save_data(project, "state.yaml", {..., phase_states: {campaign_push: "completed"
 
 ### Post-run: update cross-run intelligence
 
-After pipeline completes (before or after activation):
+After pipeline completes (before or after activation), compute and save intelligence:
+
 ```
-# Load run file keyword/industry leaderboards
-# Update ~/.gtm-mcp/filter_intelligence.json with quality scores
-# This helps future runs start with proven keywords
-save_data("_global", "filter_intelligence.json", {
-  keyword_knowledge: {..., new entries from this run},
-  segment_playbooks: {..., best keywords for this segment}
+# 1. Build keyword leaderboard from this run's request tracking
+run = load_data(project, "runs/{run_id}.json")
+
+keyword_leaderboard = []
+For each unique keyword in run.requests[]:
+  requests_for_kw = run.requests where type=="keyword" and filter_value==keyword
+  companies_for_kw = run.companies where found_by_requests intersects requests_for_kw.ids
+  targets_for_kw = companies_for_kw where classification.is_target == true
+  credits = sum(requests_for_kw.result.credits_used)
+  target_rate = len(targets_for_kw) / len(companies_for_kw) if companies_for_kw else 0
+  quality_score = target_rate * log(len(companies_for_kw) + 1) / max(credits, 1)
+  
+  keyword_leaderboard.append({keyword, unique_companies, targets, target_rate, credits, quality_score})
+
+Sort by quality_score DESC.
+
+# 2. Save leaderboard to run file
+save_data(project, "runs/{run_id}.json", {
+  keyword_leaderboard: keyword_leaderboard,
+  industry_leaderboard: [...same computation for industries...]
 }, mode="merge")
+
+# 3. Update global filter intelligence
+existing_intel = load_data("_global", "filter_intelligence.json")
+
+For each keyword in leaderboard:
+  If keyword exists in intel.keyword_knowledge:
+    Update: avg_target_rate, increment times_used, update best_target_rate
+  Else:
+    Create new entry with this run's stats
+
+# Update segment playbook for this segment
+segment_name = run's primary segment
+intel.segment_playbooks[segment_name] = {
+  best_keywords: top 5 by quality_score,
+  avg_target_rate: from this + previous runs,
+  avg_cost_per_contact: total_credits / contacts_extracted
+}
+
+save_data("_global", "filter_intelligence.json", intel)
 ```
+
+This ensures Mode 3 future runs and new projects in similar segments start with proven keywords.
 
 ---
 
