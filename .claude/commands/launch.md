@@ -234,7 +234,7 @@ apollo_estimate_cost(target_count=kpi, contacts_per_company=3, target_rate=probe
 
 **Resolve email accounts — MANDATORY, ask user if not in args:**
 
-**NEVER auto-select accounts from the document. NEVER assume. ALWAYS ask the user.**
+**NEVER auto-select accounts from the document. If the user provided an account hint in their /launch input (e.g. "accounts with Rinat"), use that. If not, STOP and ask.**
 
 ```
 # Step 1: Cache all accounts
@@ -259,7 +259,7 @@ Show: "Found {N} accounts matching '{hint}': {top emails}. Using these."
 
 **Resolve blacklist — MANDATORY, ask user if not in args:**
 
-**NEVER skip blacklist. ALWAYS ask the user about existing campaigns to exclude.**
+**Blacklist is MANDATORY. If the user already provided blacklist info in their /launch input (e.g. a SmartLead campaign URL), use that — don't re-ask. Only ask if they didn't mention it.**
 
 ```
 # Ask the user BEFORE showing the strategy document:
@@ -729,8 +729,17 @@ save_data(project, "state.yaml", {
 1. **User referenced existing SmartLead campaign** (e.g. "use sequence from campaign 3137079"):
    ```
    ref_campaign = smartlead_get_campaign(campaign_id)
-   sequence_steps = ref_campaign.data.sequences
-   → Use those steps directly. Already SmartLead-formatted.
+   raw_sequences = ref_campaign.data.sequences
+   
+   # Convert SmartLead format → our format for campaign_push:
+   sequence_steps = [{
+     "step": s["seq_number"],
+     "day": s.get("seq_delay_details", {}).get("delayInDays", s.get("seq_delay_details", {}).get("delay_in_days", 0)),
+     "subject": s.get("subject", ""),
+     "body": s.get("email_body", ""),
+   } for s in raw_sequences]
+   
+   # Note: body is HTML from SmartLead — that's fine, smartlead_set_sequence will pass it through
    ```
 
 2. **User's input document had sequences** → extract, validate, use.
