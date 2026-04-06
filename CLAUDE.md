@@ -38,7 +38,6 @@ Thin MCP server (tools) + domain knowledge (skills). Zero LLM calls inside the s
 | Command | What It Does |
 |---------|---|
 | **/launch** | **Full pipeline with 3 modes: fresh (new project), new-campaign (existing project, new segment), append (add contacts to existing campaign). Pre-flight → approval → round loop → SmartLead push. Zero interaction after approval.** |
-| /leadgen | Alias for /launch |
 | /qualify | Batch company qualification with versioned snapshots |
 | /outreach | Generate email/LinkedIn sequences + push to platforms |
 | /replies | Sync + classify + triage campaign replies |
