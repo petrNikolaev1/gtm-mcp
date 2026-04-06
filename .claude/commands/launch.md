@@ -75,7 +75,7 @@ save_data(project, "state.yaml", {
   active_run_id: "run-001",
   phase_states: {
     offer_extraction: "pending",          # Mode 2/3: "skipped"
-    filter_generation: "pending",
+    filter_generation: "pending",         # Mode 3: "skipped" (reuse previous filters)
     cost_gate: "pending",
     round_loop: "pending",
     people_extraction: "pending",
@@ -141,6 +141,37 @@ save_data(project, "state.yaml", {
 
 ## Step 2: Generate Filters + Probe (AUTONOMOUS)
 
+**Mode 3 (append): SKIP filter generation entirely.** Reuse filters from previous run:
+```
+# Load the last run for this campaign
+prev_run_id = campaign_data.run_ids[-1]   # e.g. "run-001"
+prev_run = load_data(project, f"runs/{prev_run_id}.json")
+
+# Reuse the same filters — they already worked for this segment
+filters = prev_run.filter_snapshots[-1]   # last (best) filter snapshot
+keywords = filters.keywords               # or from keyword_leaderboard (top performers first)
+industry_tag_ids = filters.industry_tag_ids
+locations = filters.locations
+employee_ranges = filters.employee_ranges
+
+# Seed from leaderboard: put best-performing keywords FIRST
+keyword_leaderboard = prev_run.keyword_leaderboard
+if keyword_leaderboard:
+  keywords = [kw.keyword for kw in sorted(keyword_leaderboard, key=lambda k: -k.quality_score)]
+  # Exclude exhausted keywords (all pages fetched in previous run)
+  # Add any remaining unused keywords at the end
+
+# NO probe needed — we already know the target rate from previous run
+# NO taxonomy call needed — tag_ids already resolved
+# NO LLM needed — everything is deterministic
+
+# Skip straight to Checkpoint 1 with reused filters
+```
+
+This saves ~2-5 minutes of LLM filter generation + 6 probe credits. The filters already proved 73% target rate — no reason to regenerate.
+
+**Mode 1 and 2: Generate filters fresh.**
+
 Use the **apollo-filter-mapping** skill rules.
 
 **Get taxonomy:**
@@ -152,8 +183,6 @@ taxonomy = apollo_get_taxonomy()
 - Pick 2-3 industry tag_ids (SPECIFIC > BROAD)
 - Generate 20-30 keywords (product names, not generic terms)
 - Map locations and employee sizes
-
-**Mode 3 extra**: Load `keyword_leaderboard` from previous runs → seed with top performers, exclude exhausted.
 
 **Probe (6 credits max):**
 ```
