@@ -1217,10 +1217,17 @@ async def pipeline_people_to_push(
 
     # Build contacts list — apollo_enrich_people returns "matches" key
     contacts = []
+    _seen_emails: set[str] = set()  # dedup within batch
     for person in enrich_result.get("matches", enrich_result.get("people", [])):
         if not person.get("email"):
             continue
+        email_lower = person["email"].lower()
+        if email_lower in _seen_emails:
+            continue  # skip duplicate within same enrichment batch
+        _seen_emails.add(email_lower)
         domain = person.get("company_domain", "") or person.get("org_domain", "")
+        if not domain:
+            continue  # skip contacts with no company domain (orphan enrichment results)
         org = person.get("org_data", {})
         contacts.append({
             "email": person["email"],
