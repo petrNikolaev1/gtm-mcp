@@ -739,6 +739,7 @@ async def pipeline_save_intelligence(
     run_data = workspace.load(project, run_path)
     if not run_data:
         return {"success": False, "error": f"Run file not found"}
+    run_data = _recover_run_data(run_data)
 
     leaderboard = run_data.get("keyword_leaderboard", [])
     if not leaderboard:
