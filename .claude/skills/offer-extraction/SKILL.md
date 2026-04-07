@@ -106,7 +106,7 @@ Extract ALL of the following into a structured JSON. Skip fields you can't deter
     }
   ],
 
-  "IMPORTANT_sequences_rule": "Extract ALL sequences from the document, not just the first one. If the document has 3 sequences (e.g., Pipeline Pain, Fresh Funding, Competitor Conquest), extract ALL 3. Each sequence has its own name, steps, and cadence. Save ALL of them.",
+  "IMPORTANT_sequences_rule": "Extract ALL sequences from the document — save them ALL to project.yaml as a reference library for future use. But for the campaign, CHOOSE THE ONE sequence that works with available data. SmartLead variables are limited to: {{first_name}}, {{last_name}}, {{company_name}}, {{city}}, {{email}}. Any sequence requiring data we don't have (e.g. {{funding_round}}, {{competitor_agency}}, {{hiring_role}}) is saved but NOT used for the campaign. Pick the most generic/universal sequence.",
   
   "campaign_settings": {
     "tracking": false,
