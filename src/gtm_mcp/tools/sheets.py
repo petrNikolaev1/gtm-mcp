@@ -180,6 +180,7 @@ async def sheets_export_contacts(
                 cls = comp.get("classification", {})
                 apollo = comp.get("apollo_data", {})
                 company_data[domain] = {
+                    "name": comp.get("name", ""),
                     "confidence": cls.get("confidence", ""),
                     "reasoning": cls.get("reasoning", ""),
                     "industry": apollo.get("industry", ""),
@@ -219,6 +220,9 @@ async def sheets_export_contacts(
     rows = []
     for c in contacts:
         domain = c.get("company_domain", "")
+        # Fallback: extract domain from email if company_domain is empty
+        if not domain and c.get("email") and "@" in c["email"]:
+            domain = c["email"].split("@")[1].lower()
         cd = company_data.get(domain, {})
 
         # Company location: city, country
