@@ -85,7 +85,7 @@ async def pipeline_gather_and_scrape(
         for page in range(start, start + max_pages_per_stream):
             if len(seen_domains) >= max_companies:
                 break
-            if max_credits and req_counter >= max_credits:
+            if max_credits is not None and max_credits > 0 and req_counter >= max_credits:
                 break
 
             filters: dict[str, Any] = {
@@ -541,8 +541,12 @@ async def pipeline_save_contacts(
     """
     workspace = workspace or _default_workspace()
 
-    # 1. Save contacts.json
-    workspace.save(project, "contacts.json", contacts)
+    # 1. Save contacts.json — MERGE with existing (don't overwrite on continuation runs)
+    existing_contacts = workspace.load(project, "contacts.json") or []
+    existing_emails = {c.get("email") for c in existing_contacts if c.get("email")}
+    new_contacts = [c for c in contacts if c.get("email") not in existing_emails]
+    merged = existing_contacts + new_contacts
+    workspace.save(project, "contacts.json", merged)
 
     # 2. Load run file, update contacts + totals, write back
     run_path = f"runs/{run_id}.json"
@@ -693,10 +697,13 @@ async def pipeline_prepare_continuation(
     filter_snapshots = last_run.get("filter_snapshots", [])
     last_filters = filter_snapshots[-1].get("filters", {}) if filter_snapshots else {}
 
-    # 6. Compute dynamic scaling
+    # 6. Compute dynamic scaling — read target_rate from actual company data
     last_totals = last_run.get("totals", {})
-    targets_count = last_totals.get("targets", 0)
-    classified_count = last_totals.get("companies_classified", 0)
+    # Compute from companies dict (most reliable — always populated by gather+classify)
+    classified = [c for c in companies.values() if c.get("classification")]
+    targets_from_data = [c for c in classified if c.get("classification", {}).get("is_target")]
+    targets_count = len(targets_from_data) if targets_from_data else last_totals.get("targets", 0)
+    classified_count = len(classified) if classified else last_totals.get("companies_classified", 0)
     target_rate = targets_count / classified_count if classified_count > 0 else 0.35
     scrape_loss = 0.85
 
@@ -833,7 +840,8 @@ async def pipeline_people_to_push(
 
     # 3. Collect top N person IDs per company, then enrich
     all_person_ids = []
-    for entry in search_result.get("results", []):
+    search_data = search_result.get("data", search_result)  # handle both {data:{results:[]}} and {results:[]}
+    for entry in search_data.get("results", []):
         people = entry.get("people", [])
         top_n = [p.get("id") for p in people[:max_people_per_company] if p.get("id")]
         all_person_ids.extend(top_n)
@@ -846,9 +854,9 @@ async def pipeline_people_to_push(
     if not enrich_result.get("success"):
         return {"success": False, "error": f"Enrichment failed: {enrich_result.get('error')}", "step": "enrich"}
 
-    # Build contacts list
+    # Build contacts list — apollo_enrich_people returns "matches" key
     contacts = []
-    for person in enrich_result.get("people", []):
+    for person in enrich_result.get("matches", enrich_result.get("people", [])):
         if not person.get("email"):
             continue
         contacts.append({
@@ -922,7 +930,14 @@ async def pipeline_people_to_push(
             campaign_id = push_result["data"]["campaign_id"]
             campaign_slug = push_result["data"]["campaign_slug"]
             leads_uploaded = push_result["data"]["leads_uploaded"]
-    elif mode == "append" and existing_campaign_id:
+        else:
+            logger.error("Campaign creation failed: %s", push_result.get("error"))
+            return {"success": False, "error": f"Campaign creation failed: {push_result.get('error')}",
+                    "step": "campaign_push", "contacts_saved": len(contacts)}
+    elif mode == "append" and not existing_campaign_id:
+        return {"success": False, "error": "mode='append' requires existing_campaign_id",
+                "step": "campaign_push", "contacts_saved": len(contacts)}
+    elif mode == "append":
         from gtm_mcp.tools.smartlead import smartlead_add_leads
         add_result = await smartlead_add_leads(existing_campaign_id, leads, config=config)
         if add_result.get("success"):
@@ -981,3 +996,7 @@ async def pipeline_people_to_push(
 def _default_config():
     from gtm_mcp.config import ConfigManager
     return ConfigManager()
+
+def _default_workspace():
+    from gtm_mcp.workspace import WorkspaceManager
+    return WorkspaceManager(_default_config().dir)

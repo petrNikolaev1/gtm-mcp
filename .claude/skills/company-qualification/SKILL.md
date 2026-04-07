@@ -165,7 +165,7 @@ INCLUSION SIGNALS (what makes a company a TARGET):
 4. Growing company (funding, hiring, expanding)
 
 CLASSIFY from the WEBSITE TEXT (not Apollo labels).
-Return JSON: {"is_target": bool, "confidence": 0-100, "segment": "CAPS_LABEL", "reasoning": "1-2 sentences"}
+Return JSON: {"is_target": bool, "confidence": 0-100, "segment": "CAPS_LABEL", "reasoning": "3-5 sentences citing website evidence"}
 For targets: segment = one of {segment_labels}
 For non-targets: segment = what the company ACTUALLY IS (COMPETITOR, RESTAURANT, etc.)
 ```
@@ -245,7 +245,7 @@ Every classified company must track:
 - `is_target`: bool
 - `confidence`: 0-100
 - `segment`: CAPS_SNAKE_CASE label
-- `reasoning`: 1-2 sentences
+- `reasoning`: 3-5 sentences citing website evidence
 
 ## Iteration Lifecycle
 

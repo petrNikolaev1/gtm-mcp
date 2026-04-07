@@ -175,6 +175,8 @@ Free text:
    → NEVER default to "US" silently. NEVER proceed without geo confirmation.
 ```
 
+**This is a HARD REQUIREMENT. Do NOT proceed to filter generation without geo confirmation from the user.** Run #5 (inxy) wasted 65 credits because geo was wrong — website said "Excl. US, UK" but agent searched IN US and UK.
+
 **Run #5 (inxy) failed catastrophically here**: website said "Excl. sanctioned countries, UK and US" but agent searched IN US and UK. 14 of 22 contacts were US/UK-based — completely unusable. This wasted 65 credits on wrong-geo contacts.
 
 **Mode 3: skip accounts/blacklist** — but STILL verify geo matches the existing campaign's target regions.
@@ -622,12 +624,15 @@ for entry in prev.keyword_leaderboard:
 
 ```
 result = pipeline_gather_and_scrape(
+  project=project_slug,                # REQUIRED
+  run_id=run_id,                       # REQUIRED
   keywords=approved_keywords,          # min_keywords from Dynamic Scaling section
   industry_tag_ids=approved_tag_ids,   # 2-3 tag_ids from Step 2
   locations=approved_locations,
   employee_ranges=approved_ranges,
   funding_stages=approved_funding,     # or null
   max_companies=max_companies,         # from Dynamic Scaling (KPI-driven, NOT hardcoded 400)
+  max_credits=max_credits,             # from Dynamic Scaling — STOPS gathering when hit
   scrape_concurrent=100,
   max_pages_per_stream=5,
   keyword_start_pages=keyword_start_pages,  # Mode 3: skip already-fetched pages
@@ -928,7 +933,10 @@ Update state: `save_data(project, "state.yaml", {..., phase_states: {round_loop:
 
 ---
 
-## Step 5: People Extraction Details
+## Step 5: People Extraction Details (REFERENCE ONLY — pipeline_people_to_push handles this)
+
+**If using `pipeline_people_to_push` (recommended), skip Steps 5-7 entirely.** The atomic tool does all of this internally.
+The details below are reference for understanding what happens inside the tool, or for manual fallback if the tool fails.
 
 People extraction runs INSIDE Step 4's streaming loop (sub-step 3). These are the detailed rules:
 
