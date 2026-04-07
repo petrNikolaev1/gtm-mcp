@@ -940,53 +940,90 @@ async def pipeline_prepare_continuation(
         return {"success": False, "error": f"No previous run found for project {project}"}
     last_run = _recover_run_data(last_run)
 
-    # 3. Count unused targets
-    companies = last_run.get("companies", {})
-    contacts = last_run.get("contacts", [])
-    contact_domains = {c.get("company_domain") for c in contacts}
+    # 3. DETERMINISTIC: Scan campaign's run files for complete intelligence
+    # Only runs linked to THIS campaign — different campaigns have different segments/keywords
+    import json as _json
+    campaign_run_ids = set(campaign_data.get("run_ids", []))
+    # Also include the last_run if not already in the list
+    if last_run_id:
+        campaign_run_ids.add(last_run_id)
+    all_companies: dict[str, dict] = {}  # domain → company (merged from campaign runs)
+    all_run_requests: list[dict] = []
+    all_filter_snapshots: list[dict] = []
 
-    # Also load project-level contacts for cross-run dedup
+    if (project_dir / "runs").exists():
+        for rf in sorted((project_dir / "runs").glob("run-*.json")):
+            if rf.stem not in campaign_run_ids:
+                continue  # skip runs from other campaigns
+            try:
+                rd = _json.loads(rf.read_text())
+                rd = _recover_run_data(rd)
+            except Exception:
+                continue
+            # Merge companies (later runs overwrite earlier for same domain)
+            for d, c in rd.get("companies", {}).items():
+                if d not in all_companies or c.get("classification"):
+                    all_companies[d] = c
+            all_run_requests.extend(rd.get("requests", []))
+            all_filter_snapshots.extend(rd.get("filter_snapshots", []))
+
+    # 4. Find unused targets across ALL runs — targets classified but never enriched
     all_contacts = workspace.load(project, "contacts.json") or []
-    all_contact_domains = {c.get("company_domain") for c in all_contacts}
+    all_contact_domains = {c.get("company_domain") for c in all_contacts if c.get("company_domain")}
+    all_contact_emails = {c.get("email") for c in all_contacts if c.get("email")}
 
     unused_targets = []
-    for domain, comp in companies.items():
+    for domain, comp in all_companies.items():
         cls = comp.get("classification", {})
         if cls.get("is_target") and not comp.get("people_extracted") and domain not in all_contact_domains:
             unused_targets.append(domain)
 
-    # 4. Build keyword intelligence from ALL run files (deterministic, not just leaderboard)
-    leaderboard = last_run.get("keyword_leaderboard", [])
+    # 5. Build keyword intelligence from ALL requests (deterministic)
     keyword_start_pages = {}
     exhausted_keywords = []
     fired_keywords = set()
+    # Track per-keyword quality: unique companies and targets found
+    keyword_stats_map: dict[str, dict] = {}  # kw → {unique, targets, credits, pages}
 
-    # DETERMINISTIC: scan ALL run files for request history (agent can't mess this up)
-    all_run_requests = []
-    if (project_dir / "runs").exists():
-        import json as _json
-        for rf in sorted((project_dir / "runs").glob("run-*.json")):
-            try:
-                rd = _json.loads(rf.read_text())
-                rd = _recover_run_data(rd)
-                all_run_requests.extend(rd.get("requests", []))
-            except Exception:
-                continue
-
-    # Build page map from actual requests across ALL runs
     for req in all_run_requests:
         kw = req.get("filter_value", "")
+        if not kw:
+            continue
         page = req.get("page", 1)
         fired_keywords.add(kw)
         if page >= keyword_start_pages.get(kw, 0):
-            keyword_start_pages[kw] = page + 1  # next page
-        # Mark exhausted if returned < 100 results
+            keyword_start_pages[kw] = page + 1
         raw = req.get("result", {}).get("raw_returned", 100)
-        if raw < 100:
-            if kw not in exhausted_keywords:
-                exhausted_keywords.append(kw)
+        new_unique = req.get("result", {}).get("new_unique", 0)
+        if raw < 100 and kw not in exhausted_keywords:
+            exhausted_keywords.append(kw)
+        # Accumulate keyword quality stats
+        if kw not in keyword_stats_map:
+            keyword_stats_map[kw] = {"unique": 0, "targets": 0, "credits": 0, "pages": []}
+        keyword_stats_map[kw]["unique"] += new_unique
+        keyword_stats_map[kw]["credits"] += 1
+        keyword_stats_map[kw]["pages"].append(page)
 
-    # Also use leaderboard data (may have quality_score info)
+    # Count targets per keyword from company discovery data
+    for domain, comp in all_companies.items():
+        found_by = comp.get("discovery", {}).get("found_by", "")
+        if ":" in found_by:
+            kw = found_by.split(":", 1)[1]
+            if kw in keyword_stats_map and comp.get("classification", {}).get("is_target"):
+                keyword_stats_map[kw]["targets"] += 1
+
+    # Compute quality_score per keyword: target_rate × log(unique+1) / credits
+    import math
+    for kw, stats in keyword_stats_map.items():
+        uc = stats["unique"]
+        targets = stats["targets"]
+        credits = max(stats["credits"], 1)
+        target_rate_kw = targets / uc if uc > 0 else 0
+        stats["target_rate"] = round(target_rate_kw, 3)
+        stats["quality_score"] = round(target_rate_kw * math.log(uc + 1) / credits, 4) if uc > 0 else 0
+
+    # Also merge leaderboard data from last run
+    leaderboard = last_run.get("keyword_leaderboard", [])
     sorted_lb = sorted(leaderboard, key=lambda x: -x.get("quality_score", 0))
     for entry in sorted_lb:
         kw = entry.get("filter_value", "")
@@ -994,34 +1031,30 @@ async def pipeline_prepare_continuation(
         if entry.get("exhausted") and kw not in exhausted_keywords:
             exhausted_keywords.append(kw)
 
-    # 5. Get filters from last run
-    filter_snapshots = last_run.get("filter_snapshots", [])
-    last_filters = filter_snapshots[-1].get("filters", {}) if filter_snapshots else {}
+    # 6. Get filters — scan ALL filter snapshots, use latest
+    last_filters = all_filter_snapshots[-1].get("filters", {}) if all_filter_snapshots else {}
 
-    # Identify NEVER-FIRED keywords — generated but cap hit before they ran
-    # These are gold: completely untouched, zero credits spent
+    # Build OPTIMIZED keyword order:
+    # 1. Never-fired (fresh, zero cost)
+    # 2. Best performers with more pages (sorted by quality_score — target_rate × volume)
+    # 3. Remaining with more pages
     all_keywords = last_filters.get("keywords", [])
     never_fired = [k for k in all_keywords if k not in fired_keywords and k not in exhausted_keywords]
-
-    # Build OPTIMIZED keyword order for continuation:
-    # 1. Never-fired (fresh, zero cost so far)
-    # 2. Keywords with more pages (not exhausted, already proven productive)
     exhausted_set = set(exhausted_keywords)
     has_more_pages = [kw for kw in fired_keywords if kw not in exhausted_set]
-    # Sort by quality_score from leaderboard if available
-    lb_scores = {e.get("filter_value", ""): e.get("quality_score", 0) for e in sorted_lb}
-    has_more_pages.sort(key=lambda kw: -lb_scores.get(kw, 0))
+    # Sort by quality_score (best target-producing keywords first)
+    has_more_pages.sort(key=lambda kw: -keyword_stats_map.get(kw, {}).get("quality_score", 0))
     optimized_keywords = never_fired + has_more_pages
 
-    # 6. Compute dynamic scaling — read target_rate from actual company data
-    last_totals = last_run.get("totals", {})
-    # Compute from companies dict (most reliable — always populated by gather+classify)
+    # 7. Compute dynamic scaling from ALL runs' actual data
+    companies = all_companies  # use merged data
     classified = [c for c in companies.values() if c.get("classification")]
     targets_from_data = [c for c in classified if c.get("classification", {}).get("is_target")]
-    targets_count = len(targets_from_data) if targets_from_data else last_totals.get("targets", 0)
-    classified_count = len(classified) if classified else last_totals.get("companies_classified", 0)
+    targets_count = len(targets_from_data)
+    classified_count = len(classified)
     target_rate = targets_count / classified_count if classified_count > 0 else 0.35
     scrape_loss = 0.85
+    last_totals = last_run.get("totals", {})
 
     needed_companies = math.ceil(additional_kpi / contacts_per_company)
     phase_0_sufficient = len(unused_targets) >= needed_companies
