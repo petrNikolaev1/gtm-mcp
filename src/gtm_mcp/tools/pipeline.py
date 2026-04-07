@@ -246,7 +246,12 @@ async def pipeline_gather_and_scrape(
     gather_done = asyncio.Event()
     req_counter = 0
 
-    # --- Phase 1: Apollo gather (all parallel, feeds scrape queue) ---
+    # --- Phase 1: Apollo gather (CONTROLLED concurrency, feeds scrape queue) ---
+    # Semaphore limits concurrent Apollo API calls. Without this, asyncio.gather
+    # fires ALL coroutines at once — 350 API calls before any counter check can stop them.
+    # With semaphore(10), only 10 run at a time. After each batch completes,
+    # req_counter and seen_domains are updated, so the next batch can stop early.
+    _apollo_sem = asyncio.Semaphore(10)
 
     _start_pages = keyword_start_pages or {}
 
@@ -254,90 +259,98 @@ async def pipeline_gather_and_scrape(
         nonlocal req_counter
         start = _start_pages.get(filter_value, 1)
         for page in range(start, start + max_pages_per_stream):
+            # Check BEFORE acquiring semaphore (fast exit for late coroutines)
             if len(seen_domains) >= max_companies:
-                break
+                return
             if max_credits is not None and max_credits > 0 and req_counter >= max_credits:
-                break
+                return
 
-            filters: dict[str, Any] = {
-                "organization_locations": locations,
-                "organization_num_employees_ranges": employee_ranges,
-            }
-            if filter_type == "keyword":
-                filters["q_organization_keyword_tags"] = [filter_value]
-            else:
-                filters["organization_industry_tag_ids"] = [filter_value]
-            if funded and funding_stages:
-                filters["organization_latest_funding_stage_cd"] = funding_stages
-
-            result = await apollo_search_companies(api_key, filters, page=page, per_page=100)
-            if not result.get("success"):
-                break
-
-            raw_companies = result.get("companies", [])
-            if not raw_companies:
-                break  # exhausted
-
-            new_unique = 0
-            for c in raw_companies:
-                domain = c.get("primary_domain", "") or c.get("domain", "")
-                if not domain or domain in seen_domains:
-                    continue
+            async with _apollo_sem:
+                # Re-check AFTER acquiring semaphore (counters updated while waiting)
                 if len(seen_domains) >= max_companies:
-                    break
-                seen_domains.add(domain)
-                new_unique += 1
-                companies[domain] = {
-                    "domain": domain,
-                    "name": c.get("name", ""),
-                    "apollo_id": c.get("apollo_id", "") or c.get("id", ""),
-                    "apollo_data": {
-                        "industry": c.get("industry", ""),
-                        "industry_tag_id": c.get("industry_tag_id", ""),
-                        "employee_count": c.get("employee_count"),
-                        "employee_range": c.get("employee_range", ""),
-                        "country": c.get("country", ""),
-                        "city": c.get("city", ""),
-                        "state": c.get("state", ""),
-                        "founded_year": c.get("founded_year"),
-                        "linkedin_url": c.get("linkedin_url", ""),
-                        "short_description": c.get("short_description", ""),
-                        "keywords": c.get("keywords", []),
-                        "funding_stage": c.get("funding_stage", ""),
-                        "funding_amount": c.get("funding_amount"),
-                        "revenue": c.get("revenue", ""),
-                        "phone": c.get("phone", ""),
-                    },
-                    "discovery": {
-                        "found_by": f"{filter_type}:{filter_value}",
-                        "funded": funded,
-                        "page": page,
-                    },
+                    return
+                if max_credits is not None and max_credits > 0 and req_counter >= max_credits:
+                    return
+
+                filters: dict[str, Any] = {
+                    "organization_locations": locations,
+                    "organization_num_employees_ranges": employee_ranges,
                 }
-                # Feed to scrape queue immediately
-                await scrape_queue.put(domain)
+                if filter_type == "keyword":
+                    filters["q_organization_keyword_tags"] = [filter_value]
+                else:
+                    filters["organization_industry_tag_ids"] = [filter_value]
+                if funded and funding_stages:
+                    filters["organization_latest_funding_stage_cd"] = funding_stages
 
-            req_counter += 1
-            requests.append({
-                "id": f"req-{req_counter:03d}",
-                "type": filter_type,
-                "filter_value": filter_value,
-                "funded": funded,
-                "page": page,
-                "result": {
-                    "raw_returned": len(raw_companies),
-                    "new_unique": new_unique,
-                    "duplicates": len(raw_companies) - new_unique,
-                    "credits_used": 1,
-                },
-            })
+                result = await apollo_search_companies(api_key, filters, page=page, per_page=100)
+                if not result.get("success"):
+                    return
 
-            # Low yield: <10 on page 1 → stop
-            if page == 1 and len(raw_companies) < 10:
-                break
-            # Exhausted: page returned companies but 0 new unique → stop
-            if new_unique == 0:
-                break
+                raw_companies = result.get("companies", [])
+                if not raw_companies:
+                    return  # exhausted
+
+                new_unique = 0
+                for c in raw_companies:
+                    domain = c.get("primary_domain", "") or c.get("domain", "")
+                    if not domain or domain in seen_domains:
+                        continue
+                    if len(seen_domains) >= max_companies:
+                        break
+                    seen_domains.add(domain)
+                    new_unique += 1
+                    companies[domain] = {
+                        "domain": domain,
+                        "name": c.get("name", ""),
+                        "apollo_id": c.get("apollo_id", "") or c.get("id", ""),
+                        "apollo_data": {
+                            "industry": c.get("industry", ""),
+                            "industry_tag_id": c.get("industry_tag_id", ""),
+                            "employee_count": c.get("employee_count"),
+                            "employee_range": c.get("employee_range", ""),
+                            "country": c.get("country", ""),
+                            "city": c.get("city", ""),
+                            "state": c.get("state", ""),
+                            "founded_year": c.get("founded_year"),
+                            "linkedin_url": c.get("linkedin_url", ""),
+                            "short_description": c.get("short_description", ""),
+                            "keywords": c.get("keywords", []),
+                            "funding_stage": c.get("funding_stage", ""),
+                            "funding_amount": c.get("funding_amount"),
+                            "revenue": c.get("revenue", ""),
+                            "phone": c.get("phone", ""),
+                        },
+                        "discovery": {
+                            "found_by": f"{filter_type}:{filter_value}",
+                            "funded": funded,
+                            "page": page,
+                        },
+                    }
+                    # Feed to scrape queue immediately
+                    await scrape_queue.put(domain)
+
+                req_counter += 1
+                requests.append({
+                    "id": f"req-{req_counter:03d}",
+                    "type": filter_type,
+                    "filter_value": filter_value,
+                    "funded": funded,
+                    "page": page,
+                    "result": {
+                        "raw_returned": len(raw_companies),
+                        "new_unique": new_unique,
+                        "duplicates": len(raw_companies) - new_unique,
+                        "credits_used": 1,
+                    },
+                })
+
+                # Low yield: <10 on page 1 → stop
+                if page == 1 and len(raw_companies) < 10:
+                    return
+                # Exhausted: page returned companies but 0 new unique → stop
+                if new_unique == 0:
+                    return
 
     gather_started = datetime.now(timezone.utc)
 
