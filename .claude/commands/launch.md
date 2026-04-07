@@ -554,7 +554,7 @@ save_data(project, "project.yaml", {..., offer_approved: true}, mode="merge")
 save_data(project, "pipeline-config.yaml", {
   project: project_slug, mode: mode,
   offer: {primary_offer, segments, target_roles},
-  filters: {keywords_count, industry_tag_ids, locations, employee_ranges},
+  filters: {keywords_count, keywords: [full_list], industry_tag_ids, locations, employee_ranges},
   probe: {breakdown, credits_used},
   cost_estimate: {total_credits, usd},
   kpi: {target_people, max_credits},
@@ -1247,7 +1247,11 @@ Campaign Ready (DRAFT) — Checkpoint 2:
     Segments: {unused_segment_breakdown}
     Estimated contacts: ~{unused_count * avg_contacts_per_company} (at {avg_contacts_per_company}/company)
     Estimated cost: ~{unused_count * contacts_per_company} people credits only ($X) — ZERO search/scrape/classify
-    → Run `/launch project={project_slug} kpi={unused_contacts}` to harvest for free
+    → Say "add {unused_contacts} more" to harvest for free
+
+  KEYWORDS — {never_fired_count} never-fired, {has_more_pages_count} with more pages:
+    Full list: ~/.gtm-mcp/projects/{project_slug}/runs/{run_id}.json → filter_snapshots[0].filters.keywords
+    Top unused: {top_5_never_fired_keywords}
 
   Type "activate" to start sending.
 ```
