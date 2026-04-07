@@ -10,16 +10,18 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Contact headers: magnum-opus CRM reference + classification reasoning
+# Contact headers — only fields that can actually be filled from Apollo + pipeline data
 CONTACT_HEADERS = [
-    "first name", "last name", "Position", "Website", "Linkedin",
-    "Company", "Company Location", "segment", "Employees",
-    "target_lead_email", "Industry", "Status", "Sample Status",
-    "Sample Comment", "Sample Responsible", "Lead Source",
-    "Updates after communication", "Sample link", "Market size, k",
-    "Channel", "campaign", "text", "time", "created time",
-    "campaign_id", "category",
-    "target_confidence", "target_reasoning",
+    # Person (from enrichment)
+    "first name", "last name", "Position", "Seniority", "Linkedin",
+    "target_lead_email", "Phone",
+    # Company (from enrichment org_data — the RICH source)
+    "Company", "Website", "Company Location", "Country",
+    "Industry", "Employees", "Founded", "Funding Stage",
+    "Revenue", "Keywords", "Description",
+    # Pipeline (from classification + campaign)
+    "segment", "target_confidence", "target_reasoning",
+    "Lead Source", "campaign",
 ]
 
 
@@ -213,51 +215,54 @@ async def sheets_export_contacts(
     if not sheets_svc:
         return {"success": False, "error": "Google credentials not configured"}
 
-    # Build rows from contacts, enriched with apollo_data + classification
+    # Build rows from contacts + company apollo_data + classification
     rows = []
     for c in contacts:
         domain = c.get("company_domain", "")
         cd = company_data.get(domain, {})
 
-        # Company location: city, state, country
-        loc_parts = [cd.get("city", ""), cd.get("state", ""), cd.get("country", "")]
+        # Company location: city, country
+        loc_parts = [cd.get("city", ""), cd.get("country", "")]
         company_location = ", ".join(p for p in loc_parts if p)
 
-        # Employees: prefer employee_range ("11-50") over raw count
-        employees = cd.get("employee_range", "") or str(cd.get("employee_count", "") or "")
+        # Employees: prefer count, show as number
+        employees = cd.get("employee_count", "") or ""
 
-        # Revenue for market size
+        # Revenue
         revenue = cd.get("revenue", "")
 
+        # Keywords as comma-separated
+        keywords = cd.get("keywords", "")
+        if isinstance(keywords, list):
+            keywords = ", ".join(keywords[:8])
+
         rows.append([
-            c.get("name", "").split(" ")[0] if c.get("name") else c.get("first_name", ""),
-            c.get("name", "").split(" ", 1)[1] if c.get("name") and " " in c.get("name", "") else c.get("last_name", ""),
+            # Person
+            c.get("first_name", "") or (c.get("name", "").split(" ")[0] if c.get("name") else ""),
+            c.get("last_name", "") or (c.get("name", "").split(" ", 1)[1] if c.get("name") and " " in c.get("name", "") else ""),
             c.get("title", ""),
-            domain,
+            c.get("seniority", ""),
             c.get("linkedin_url", ""),
-            c.get("company_name_normalized", c.get("company_name", "")),
-            company_location,  # Company Location — from Apollo
-            c.get("segment", ""),
-            employees,  # Employees — from Apollo
             c.get("email", ""),
-            cd.get("industry", ""),  # Industry — from Apollo
-            "",  # Status (CRM operational)
-            "",  # Sample Status (CRM operational)
-            "",  # Sample Comment (CRM operational)
-            "",  # Sample Responsible (CRM operational)
-            "Apollo",  # Lead Source
-            "",  # Updates (CRM operational)
-            "",  # Sample link (CRM operational)
-            str(revenue) if revenue else "",  # Market size — from Apollo revenue
-            "Email",  # Channel
-            campaign_slug,  # campaign
-            cd.get("short_description", ""),  # text — Apollo short description
-            "",  # time
-            "",  # created time
-            str((campaign_data or {}).get("campaign_id", "")),  # campaign_id
-            cd.get("funding_stage", ""),  # category — funding stage
-            str(cd.get("confidence", "")),  # target_confidence
-            cd.get("reasoning", ""),  # target_reasoning
+            c.get("phone", "") or "",
+            # Company
+            c.get("company_name_normalized", "") or cd.get("name", ""),
+            domain,
+            company_location,
+            cd.get("country", ""),
+            cd.get("industry", ""),
+            str(employees) if employees else "",
+            str(cd.get("founded_year", "")) if cd.get("founded_year") else "",
+            cd.get("funding_stage", ""),
+            str(revenue) if revenue else "",
+            keywords,
+            cd.get("short_description", ""),
+            # Pipeline
+            c.get("segment", ""),
+            str(cd.get("confidence", "")),
+            cd.get("reasoning", ""),
+            "Apollo",
+            campaign_slug or str((campaign_data or {}).get("campaign_id", "")),
         ])
 
     try:

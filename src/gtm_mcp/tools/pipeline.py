@@ -1047,6 +1047,28 @@ async def pipeline_people_to_push(
     people_credits = len(contacts)
     logger.info("pipeline_people_to_push: %d contacts enriched (%d credits)", len(contacts), people_credits)
 
+    # 3b. Backfill company apollo_data from enrichment org_data
+    # Apollo search returns sparse data (null for most fields).
+    # Enrichment returns FULL org data (39 fields) — use it to fill gaps.
+    enriched_people = enrich_result.get("matches", enrich_result.get("people", []))
+    for person in enriched_people:
+        domain = person.get("company_domain", "")
+        org_data = person.get("org_data", {})
+        if domain and domain in companies and org_data:
+            existing_ad = companies[domain].get("apollo_data", {})
+            # Only overwrite empty fields — don't lose data from search
+            for key, val in org_data.items():
+                if val and not existing_ad.get(key):
+                    existing_ad[key] = val
+            companies[domain]["apollo_data"] = existing_ad
+            # Also update name if missing
+            if not companies[domain].get("name") and person.get("company_name"):
+                companies[domain]["name"] = person["company_name"]
+
+    # Save updated companies back to run file
+    run_data["companies"] = companies
+    workspace.save(project, run_path, run_data)
+
     # 4. Save contacts (atomic — credits computed FROM run file, not passed)
     await pipeline_save_contacts(project, run_id, contacts, people_credits,
                                  workspace=workspace)

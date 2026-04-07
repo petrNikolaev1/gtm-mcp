@@ -1,5 +1,7 @@
 """Apollo.io API tools — company search, people search, enrichment, taxonomy.
 
+Raw API responses saved to ~/.gtm-mcp/debug_apollo_*.json for debugging.
+
 Credit costs:
   /mixed_companies/search    — 1 credit per page (max 100/page)
   /mixed_people/api_search   — FREE (partial profile, max 25/page)
@@ -15,8 +17,10 @@ CRITICAL FILTER RULES:
 """
 import asyncio
 import json
+import json as _json  # alias for raw debug saves
 import logging
 import time
+from pathlib import Path
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +127,14 @@ async def apollo_search_companies(
     if not data:
         return {"success": False, "error": "Apollo API call failed"}
 
+    # Save raw response for debugging (last response only, overwritten each call)
+    try:
+        raw_path = Path.home() / ".gtm-mcp" / "debug_apollo_company_search.json"
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text(_json.dumps(data, indent=2, default=str)[:500_000])
+    except Exception:
+        pass
+
     companies = []
     for org in data.get("organizations") or data.get("accounts") or []:
         companies.append({
@@ -132,6 +144,7 @@ async def apollo_search_companies(
             "industry_tag_id": org.get("industry_tag_id", ""),
             "employee_count": org.get("estimated_num_employees"),
             "employee_range": org.get("employee_range", ""),
+            # Company search uses BOTH field name patterns
             "country": org.get("country") or org.get("organization_country", ""),
             "city": org.get("city") or org.get("organization_city", ""),
             "state": org.get("state") or org.get("organization_state", ""),
@@ -144,12 +157,17 @@ async def apollo_search_companies(
             "keywords": org.get("keywords") or org.get("keyword_tags") or [],
             "apollo_id": org.get("id", ""),
             "phone": org.get("phone") or (org.get("primary_phone") or {}).get("number"),
-            "revenue": org.get("estimated_annual_revenue"),
+            "revenue": org.get("organization_revenue") or org.get("estimated_annual_revenue"),
+            "revenue_printed": org.get("organization_revenue_printed", ""),
+            "market_cap": org.get("market_cap", ""),
             "sic_codes": org.get("sic_codes"),
             "naics_codes": org.get("naics_codes"),
-            "headcount_6m_growth": org.get("headcount_6m_growth"),
-            "headcount_12m_growth": org.get("headcount_12m_growth"),
+            "headcount_6m_growth": org.get("organization_headcount_six_month_growth"),
+            "headcount_12m_growth": org.get("organization_headcount_twelve_month_growth"),
             "languages": org.get("languages"),
+            "street_address": org.get("street_address", ""),
+            "postal_code": org.get("postal_code", ""),
+            "publicly_traded_symbol": org.get("publicly_traded_symbol", ""),
         })
 
     pagination = data.get("pagination", {})
@@ -280,6 +298,7 @@ async def apollo_enrich_people(api_key: str, person_ids: list[str]) -> dict:
 
     # Auto-chunk: Apollo bulk_match fails on >10 IDs
     all_matches_raw = []
+    _debug_raw = []  # Save raw responses for debugging
     for i in range(0, len(person_ids), 10):
         chunk = person_ids[i:i + 10]
         details = [{"id": pid} for pid in chunk]
@@ -288,6 +307,15 @@ async def apollo_enrich_people(api_key: str, person_ids: list[str]) -> dict:
         })
         if data:
             all_matches_raw.extend(data.get("matches", []))
+            _debug_raw.extend(data.get("matches", []))
+
+    # Save raw enrichment response for debugging
+    try:
+        raw_path = Path.home() / ".gtm-mcp" / "debug_apollo_enrich.json"
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text(_json.dumps(_debug_raw[:5], indent=2, default=str)[:500_000])
+    except Exception:
+        pass
 
     if not all_matches_raw:
         return {"success": False, "error": "Apollo bulk_match failed"}
@@ -324,12 +352,22 @@ async def apollo_enrich_people(api_key: str, person_ids: list[str]) -> dict:
             "phone": phone,
             "company_name": org.get("name", ""),
             "company_domain": org.get("primary_domain", "") or org.get("website_url", ""),
-            "org_industry": org.get("industry", ""),
-            "org_industry_tag_id": org.get("industry_tag_id", ""),
-            "org_country": org.get("country", ""),
-            "org_city": org.get("city", ""),
-            "org_employee_count": org.get("estimated_num_employees"),
-            "org_funding_stage": org.get("latest_funding_stage", ""),
+            "org_data": {
+                "industry": org.get("industry", ""),
+                "industry_tag_id": org.get("industry_tag_id", ""),
+                "country": org.get("country", ""),
+                "city": org.get("city", ""),
+                "state": org.get("state", ""),
+                "employee_count": org.get("estimated_num_employees"),
+                "short_description": org.get("short_description", ""),
+                "keywords": org.get("keywords") or [],
+                "funding_stage": org.get("latest_funding_stage", ""),
+                "revenue": org.get("organization_revenue") or org.get("estimated_annual_revenue"),
+                "founded_year": org.get("founded_year"),
+                "linkedin_url": org.get("linkedin_url", ""),
+                "headcount_6m_growth": org.get("organization_headcount_six_month_growth"),
+                "headcount_12m_growth": org.get("organization_headcount_twelve_month_growth"),
+            },
         })
 
     if new_tag_ids:
