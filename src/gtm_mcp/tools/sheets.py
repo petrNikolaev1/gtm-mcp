@@ -196,7 +196,7 @@ async def sheets_export_contacts(
     if not sheet_id:
         title = f"{project} — Contacts"
         if campaign_slug:
-            title = f"{project} — {campaign_slug}"
+            title = f"{campaign_slug} — Contacts"
         # Get user email for sharing
         user_email = config.get("user_email") or ""
         result = await sheets_create(title, share_with=user_email, config=config)

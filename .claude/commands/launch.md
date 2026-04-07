@@ -83,7 +83,10 @@ Named params:
 
 ```
 # After probe, compute all pipeline parameters:
-target_rate = probe_target_rate                    # e.g. 0.77
+target_rate = min(probe_target_rate, 0.60)         # CAP at 60% — probe is a small sample,
+                                                    # Apollo labels inflate the rate.
+                                                    # Real via negativa rates are 40-60%.
+                                                    # Overestimating → too few companies gathered → KPI miss.
 contacts_per_company = 3                           # avg
 scrape_loss = 0.85                                 # ~15% fail to scrape
 enrich_loss = 0.85                                 # ~15% enrichment miss
@@ -97,15 +100,16 @@ min_keywords = max(30, ceil(max_companies / 5))    # ~5 unique companies per key
 
 **Examples at different KPIs:**
 
-| KPI | target_rate | needed_targets | needed_companies | max_companies | min_keywords | max_credits |
-|-----|:-----------:|:--------------:|:----------------:|:-------------:|:------------:|:-----------:|
-| 50  | 40% | 17 | 50  | **75**  | 30 | 100 |
-| 50  | 77% | 17 | 26  | **50**  | 30 | 100 |
-| 100 | 40% | 34 | 100 | **150** | 30 | 200 |
-| 100 | 77% | 34 | 52  | **78**  | 30 | 200 |
-| 200 | 40% | 67 | 197 | **296** | 60 | 400 |
-| 200 | 77% | 67 | 102 | **153** | 31 | 400 |
-| 500 | 40% | 167 | 491 | **737** | 148 | 1000 |
+| KPI | probe_rate | capped_rate | needed_targets | needed_companies | max_companies | min_keywords | max_credits |
+|-----|:----------:|:-----------:|:--------------:|:----------------:|:-------------:|:------------:|:-----------:|
+| 50  | 40% | 40% | 17 | 50  | **75**  | 30 | 100 |
+| 50  | 77% | 60% | 17 | 34  | **51**  | 30 | 100 |
+| 100 | 40% | 40% | 34 | 100 | **150** | 30 | 200 |
+| 100 | 77% | 60% | 34 | 67  | **101** | 30 | 200 |
+| 100 | 94% | 60% | 34 | 67  | **101** | 30 | 200 |
+| 200 | 40% | 40% | 67 | 197 | **296** | 60 | 400 |
+| 200 | 77% | 60% | 67 | 132 | **198** | 40 | 400 |
+| 500 | 40% | 40% | 167 | 491 | **737** | 148 | 1000 |
 
 **Use these computed values everywhere** — in `pipeline_gather_and_scrape(max_companies=...)`, keyword generation count, credit cap display, cost estimate.
 

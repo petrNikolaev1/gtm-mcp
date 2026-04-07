@@ -570,27 +570,36 @@ async def pipeline_gather_and_scrape(
         workspace.save(project, run_path, existing_run)
         logger.info("Auto-saved %d companies + %d requests to %s", len(companies), len(requests), run_path)
 
+    # Return summary only — full data already saved to run file.
+    # Returning all scraped_texts + companies exceeds MCP token limits (~135K chars).
+    # Agent reads scraped text from the run file for classification.
+    scraped_success = sum(1 for c in companies.values() if c.get("scrape", {}).get("status") == "success")
+    scraped_failed = sum(1 for c in companies.values() if c.get("scrape", {}).get("status") != "success")
+    run_file_path = str(workspace.base / "projects" / project / run_path) if workspace and project else ""
+
     return {
         "success": True,
         "data": {
-            "companies": response_companies,
-            "scraped_texts": scraped_texts,
+            "companies": {d: {"name": c.get("name", ""), "scrape_status": c.get("scrape", {}).get("status", "unknown")}
+                          for d, c in companies.items()},
+            "scraped_texts": {d: t[:200] + "..." if len(t) > 200 else t
+                              for d, t in scraped_texts.items()},
             "requests": requests,
             "stats": {
                 "total_companies": len(companies),
-                "scraped_success": sum(1 for d, c in companies.items() if c.get("scrape", {}).get("status") == "success"),
-                "scraped_failed": sum(1 for d, c in companies.items() if c.get("scrape", {}).get("status") == "failed"),
+                "scraped_success": scraped_success,
+                "scraped_failed": scraped_failed,
                 "total_requests": len(requests),
                 "total_credits": total_credits,
-                "gather_started": gather_started.isoformat(),
-                "gather_completed": gather_completed.isoformat(),
-                "scrape_started": scrape_started.isoformat(),
-                "scrape_completed": scrape_completed.isoformat(),
                 "gather_seconds": (gather_completed - gather_started).total_seconds(),
                 "scrape_seconds": (scrape_completed - scrape_started).total_seconds(),
                 "total_seconds": (completed_at - started_at).total_seconds(),
             },
+            "run_file": run_file_path,
         },
+        "message": (f"{len(companies)} companies gathered, {scraped_success} scraped "
+                    f"({scraped_success * 100 // max(len(companies), 1)}%), "
+                    f"{total_credits} credits. Full data → {run_file_path}"),
     }
 
 
@@ -1219,6 +1228,7 @@ async def pipeline_people_to_push(
     # Build contacts list — apollo_enrich_people returns "matches" key
     contacts = []
     _seen_emails: set[str] = set()  # dedup within batch
+    _target_domain_set = set(target_domains)  # for domain validation
     for person in enrich_result.get("matches", enrich_result.get("people", [])):
         if not person.get("email"):
             continue
@@ -1229,6 +1239,11 @@ async def pipeline_people_to_push(
         domain = person.get("company_domain", "") or person.get("org_domain", "")
         if not domain:
             continue  # skip contacts with no company domain (orphan enrichment results)
+        # Validate domain is actually a target — Apollo bulk_match can return contacts
+        # whose employer domain differs from the queried domain
+        if domain not in _target_domain_set and domain not in companies:
+            logger.info("Skipping contact %s — domain %s not in target companies", email_lower, domain)
+            continue
         org = person.get("org_data", {})
         contacts.append({
             "email": person["email"],
@@ -1301,18 +1316,17 @@ async def pipeline_people_to_push(
     # 5. Google Sheet export (optional)
     # On append: reuse existing sheet_id from campaign.yaml (so URL stays the same)
     sheet_url = ""
+    import re as _re
+    campaign_slug = _re.sub(r"[^a-z0-9]+", "-", campaign_name.lower()).strip("-")
     if create_sheet and contacts:
         from gtm_mcp.tools.sheets import sheets_export_contacts
         existing_sheet_id = ""
         if mode == "append" and existing_campaign_id:
-            # Find campaign.yaml to get sheet_id
-            import re as _re
-            slug_guess = _re.sub(r"[^a-z0-9]+", "-", campaign_name.lower()).strip("-")
-            camp_data = workspace.load(project, f"campaigns/{slug_guess}/campaign.yaml")
+            camp_data = workspace.load(project, f"campaigns/{campaign_slug}/campaign.yaml")
             if camp_data:
                 existing_sheet_id = camp_data.get("sheet_id", "")
         sheet_result = await sheets_export_contacts(
-            project, sheet_id=existing_sheet_id, config=config, workspace=workspace)
+            project, campaign_slug=campaign_slug, sheet_id=existing_sheet_id, config=config, workspace=workspace)
         if sheet_result.get("success"):
             sheet_url = sheet_result["data"].get("sheet_url", "")
             # Store sheet_id in campaign for future reuse

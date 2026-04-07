@@ -353,7 +353,7 @@ async def smartlead_search_accounts(query: str, project: str = "", *, config=Non
         "by_domain": {d: len(accs) for d, accs in by_domain.items()},
         "account_ids": [a["id"] for a in matched],
         "saved_to": str(selected_path),
-    }}
+    }, "message": f"{len(matched)} accounts saved → {selected_path}"}
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +592,20 @@ async def smartlead_add_leads(campaign_id: int, leads: list[dict], *, config=Non
                            json_data={"lead_list": lead_list})
     if data is None:
         return {"success": False, "error": f"Failed to add {len(lead_list)} leads to campaign {campaign_id}"}
-    return {"success": True, "data": {"campaign_id": campaign_id, "leads_added": len(lead_list)}}
+
+    # Parse actual accepted count from SmartLead response
+    uploaded = len(lead_list)  # fallback
+    if isinstance(data, dict):
+        # SmartLead may return upload_count, total_leads, or similar
+        uploaded = data.get("upload_count", data.get("total_leads",
+                   data.get("added", len(lead_list))))
+    rejected = len(lead_list) - uploaded if uploaded < len(lead_list) else 0
+
+    result = {"campaign_id": campaign_id, "leads_sent": len(lead_list), "leads_accepted": uploaded}
+    if rejected > 0:
+        result["leads_rejected"] = rejected
+        logger.warning("SmartLead rejected %d of %d leads for campaign %d", rejected, len(lead_list), campaign_id)
+    return {"success": True, "data": result}
 
 
 # ---------------------------------------------------------------------------
