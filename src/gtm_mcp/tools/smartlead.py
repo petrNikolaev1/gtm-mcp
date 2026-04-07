@@ -333,12 +333,22 @@ async def smartlead_search_accounts(query: str, *, config=None, workspace=None) 
         domain = email.split("@")[1] if "@" in email else "unknown"
         by_domain.setdefault(domain, []).append(a)
 
+    # Save matched accounts to file for user review
+    selected_path = workspace.base / "selected_accounts.json"
+    import json as _json
+    selected_path.write_text(_json.dumps({
+        "query": query, "count": len(matched),
+        "by_domain": {d: len(accs) for d, accs in by_domain.items()},
+        "accounts": [{"id": a["id"], "email": a.get("from_email",""), "name": a.get("from_name","")} for a in matched],
+    }, indent=2))
+
     return {"success": True, "data": {
         "query": query,
         "matched": len(matched),
         "accounts": matched,
         "by_domain": {d: len(accs) for d, accs in by_domain.items()},
         "account_ids": [a["id"] for a in matched],
+        "saved_to": str(selected_path),
     }}
 
 
