@@ -162,11 +162,14 @@ Free text:
 **Check user input for:**
 ```
 1. Email accounts: look for "accounts with X", "use X accounts", sender name, domain hint
-   → If found: smartlead_list_accounts() + smartlead_search_accounts(hint)
+   → If found: smartlead_list_accounts() + smartlead_search_accounts(hint, project=project_slug)
    → If NOT found: ASK "Which email accounts should I use? (e.g. 'accounts with Rinat')"
+   **CRITICAL: ALWAYS pass project=project_slug to smartlead_search_accounts.**
+   The project slug is derived from the project name (create_project returns it).
+   If the project doesn't exist yet, call create_project FIRST, then search accounts.
    
    **After selecting accounts, ALWAYS tell the user:**
-   "{N} accounts selected. Full list saved to ~/.gtm-mcp/selected_accounts.json — review if needed."
+   "{N} accounts selected. Full list saved to ~/.gtm-mcp/projects/{slug}/selected_accounts.json — review if needed."
    Show the domain breakdown from the tool response (by_domain field).
    Wait for user to confirm before proceeding. Do NOT continue silently.
 

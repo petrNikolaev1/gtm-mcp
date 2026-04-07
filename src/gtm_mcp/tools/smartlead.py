@@ -301,7 +301,7 @@ async def smartlead_search_accounts(query: str, project: str = "", *, config=Non
     """Search cached email accounts by name, email, or domain substring.
 
     Call smartlead_list_accounts() first to populate the cache.
-    If project provided, saves selected accounts to project dir (not global).
+    ALWAYS pass project — accounts are saved per-project, never globally.
     """
     config = config or _default_config()
     workspace = workspace or _default_workspace()
@@ -333,12 +333,11 @@ async def smartlead_search_accounts(query: str, project: str = "", *, config=Non
         domain = email.split("@")[1] if "@" in email else "unknown"
         by_domain.setdefault(domain, []).append(a)
 
-    # Save matched accounts to project dir (or global if no project)
-    if project:
-        selected_path = workspace.base / "projects" / project / "selected_accounts.json"
-        selected_path.parent.mkdir(parents=True, exist_ok=True)
-    else:
-        selected_path = workspace.base / "selected_accounts.json"
+    # Save matched accounts to project dir — always require project
+    if not project:
+        return {"success": False, "error": "project is required — pass the project slug so accounts are saved per-project, not globally."}
+    selected_path = workspace.base / "projects" / project / "selected_accounts.json"
+    selected_path.parent.mkdir(parents=True, exist_ok=True)
     import json as _json
     selected_path.write_text(_json.dumps({
         "query": query, "count": len(matched),
