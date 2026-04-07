@@ -220,6 +220,13 @@ async def sheets_export_contacts(
             domain = c["email"].split("@")[1].lower()
         cd = company_data.get(domain, {})
 
+        # Fallback: if no company data from run file, use contact-level org_data
+        contact_org = c.get("org_data", {})
+        if not cd.get("industry") and contact_org:
+            for k, v in contact_org.items():
+                if v and not cd.get(k):
+                    cd[k] = v
+
         # Company location: city, country
         loc_parts = [cd.get("city", ""), cd.get("country", "")]
         company_location = ", ".join(p for p in loc_parts if p)

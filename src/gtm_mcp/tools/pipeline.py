@@ -1069,6 +1069,8 @@ async def pipeline_people_to_push(
     for person in enrich_result.get("matches", enrich_result.get("people", [])):
         if not person.get("email"):
             continue
+        domain = person.get("company_domain", "") or person.get("org_domain", "")
+        org = person.get("org_data", {})
         contacts.append({
             "email": person["email"],
             "first_name": person.get("first_name", ""),
@@ -1078,12 +1080,22 @@ async def pipeline_people_to_push(
             "seniority": person.get("seniority", ""),
             "linkedin_url": person.get("linkedin_url", ""),
             "phone": person.get("phone", ""),
-            "company_domain": person.get("company_domain", "")
-                or person.get("org_domain", ""),
+            "company_domain": domain,
             "company_name_normalized": person.get("company_name", "")
-                or companies.get(person.get("company_domain", ""), {}).get("name", ""),
-            "segment": companies.get(person.get("company_domain", ""), {}).get(
+                or companies.get(domain, {}).get("name", ""),
+            "segment": companies.get(domain, {}).get(
                 "classification", {}).get("segment", segment),
+            # Store org_data directly on contact — sheet uses this WITHOUT run file join
+            "org_data": {
+                "industry": org.get("industry", ""),
+                "country": org.get("country", ""),
+                "city": org.get("city", ""),
+                "employee_count": org.get("employee_count"),
+                "keywords": org.get("keywords", []),
+                "revenue": org.get("revenue"),
+                "founded_year": org.get("founded_year"),
+                "funding_stage": org.get("funding_stage", ""),
+            },
         })
 
     # Filter out emails already in campaign (Mode 3 dedup)
