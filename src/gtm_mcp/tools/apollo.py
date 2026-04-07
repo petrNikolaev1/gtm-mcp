@@ -322,6 +322,8 @@ async def apollo_enrich_people(api_key: str, person_ids: list[str]) -> dict:
             "seniority": match.get("seniority", ""),
             "linkedin_url": match.get("linkedin_url", ""),
             "phone": phone,
+            "company_name": org.get("name", ""),
+            "company_domain": org.get("primary_domain", "") or org.get("website_url", ""),
             "org_industry": org.get("industry", ""),
             "org_industry_tag_id": org.get("industry_tag_id", ""),
             "org_country": org.get("country", ""),

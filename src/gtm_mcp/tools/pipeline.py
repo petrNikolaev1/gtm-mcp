@@ -1028,8 +1028,10 @@ async def pipeline_people_to_push(
             "seniority": person.get("seniority", ""),
             "linkedin_url": person.get("linkedin_url", ""),
             "phone": person.get("phone", ""),
-            "company_domain": person.get("company_domain", ""),
-            "company_name_normalized": person.get("company_name", ""),
+            "company_domain": person.get("company_domain", "")
+                or person.get("org_domain", ""),
+            "company_name_normalized": person.get("company_name", "")
+                or companies.get(person.get("company_domain", ""), {}).get("name", ""),
             "segment": companies.get(person.get("company_domain", ""), {}).get(
                 "classification", {}).get("segment", segment),
         })
