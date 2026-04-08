@@ -1359,32 +1359,24 @@ async def pipeline_people_to_push(
 
     logger.info("pipeline_people_to_push: %d targets from %d companies", len(target_domains), len(companies))
 
-    # 2. Get person IDs — either pre-selected by agent (recommended) or blind search
-    from gtm_mcp.tools.apollo import apollo_search_people_batch, apollo_enrich_people
+    # 2. Get person IDs — MUST be pre-selected by agent. No blind search.
+    from gtm_mcp.tools.apollo import apollo_enrich_people
 
     api_key = config.get("apollo_api_key")
     if not api_key:
         return {"success": False, "error": "apollo_api_key not configured"}
 
-    if person_ids:
-        # Agent already searched + ranked candidates. Use their selection.
-        all_person_ids = person_ids
-        logger.info("Using %d pre-selected person IDs (agent-ranked)", len(all_person_ids))
-    else:
-        # Fallback: blind search + top N (no role prioritization)
-        seniorities = person_seniorities or ["c_suite", "vp", "head", "director", "manager"]
-        search_result = await apollo_search_people_batch(
-            api_key, target_domains, person_seniorities=seniorities, per_page=25,
-        )
-        if not search_result.get("success"):
-            return {"success": False, "error": f"People search failed: {search_result.get('error')}", "step": "search"}
+    if not person_ids:
+        return {"success": False, "error": (
+            "person_ids is REQUIRED. The agent must: "
+            "1) Call apollo_search_people_batch to get all candidates (FREE), "
+            "2) Rank candidates by title match against target_roles, "
+            "3) Pass selected person_ids to this tool. "
+            "Blind search without role ranking wastes credits on wrong roles."
+        )}
 
-        all_person_ids = []
-        search_data = search_result.get("data", search_result)
-        for entry in search_data.get("results", []):
-            people = entry.get("people", [])
-            top_n = [p.get("id") for p in people[:max_people_per_company] if p.get("id")]
-            all_person_ids.extend(top_n)
+    all_person_ids = person_ids
+    logger.info("Using %d pre-selected person IDs (agent-ranked)", len(all_person_ids))
 
     if not all_person_ids:
         return {"success": False, "error": "No people found across target companies", "step": "search",
