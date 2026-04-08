@@ -1361,17 +1361,64 @@ async def pipeline_people_to_push(
 
     seniorities = person_seniorities or ["c_suite", "vp", "head", "director", "manager"]
     search_result = await apollo_search_people_batch(
-        api_key, target_domains, person_seniorities=seniorities, per_page=10,
+        api_key, target_domains, person_seniorities=seniorities, per_page=25,  # get MORE candidates (FREE)
     )
     if not search_result.get("success"):
         return {"success": False, "error": f"People search failed: {search_result.get('error')}", "step": "search"}
 
-    # 3. Collect top N person IDs per company, then enrich
+    # 3. Score candidates by title relevance, then enrich top N per company.
+    # Search is FREE — get many, score client-side, enrich only the best matches.
+    # Load target_roles from project.yaml for title scoring.
+    project_data = workspace.load(project, "project.yaml") or {}
+    target_roles = project_data.get("target_roles", {})
+    # Build title keywords from target_roles (primary + secondary + tertiary)
+    _role_keywords: list[str] = []
+    for role_list in [target_roles.get("primary", []), target_roles.get("secondary", []),
+                      target_roles.get("tertiary", [])]:
+        if isinstance(role_list, list):
+            for role in role_list:
+                # Extract keywords from role titles: "VP Sales" → ["sales"], "Head of Growth" → ["growth"]
+                for word in str(role).lower().split():
+                    if word not in ("vp", "head", "of", "chief", "director", "manager", "senior", "the", "and", "officer"):
+                        _role_keywords.append(word)
+    # Add common sales/growth keywords as fallback
+    _role_keywords.extend(["sales", "revenue", "growth", "business development", "commercial",
+                           "marketing", "partnerships", "gtm", "go-to-market"])
+    _role_keywords = list(set(_role_keywords))  # dedup
+
+    def _title_score(title: str) -> int:
+        """Score a person's title by relevance to target roles. Higher = better match."""
+        t = (title or "").lower()
+        if not t:
+            return 0
+        score = 0
+        for kw in _role_keywords:
+            if kw in t:
+                score += 10
+        # Bonus for exact seniority match
+        if any(s in t for s in ["vp ", "vice president"]):
+            score += 5
+        elif any(s in t for s in ["head ", "chief "]):
+            score += 4
+        elif "director" in t:
+            score += 3
+        elif "ceo" in t or "founder" in t or "co-founder" in t:
+            score += 6  # decision makers
+        # Penalty for clearly wrong functions
+        if any(bad in t for bad in ["human resource", " hr ", "talent", "recruit",
+                                     "legal", "counsel", "compliance officer",
+                                     "accountant", "bookkeep", "creative director",
+                                     "design", "ux ", "ui "]):
+            score -= 20
+        return score
+
     all_person_ids = []
-    search_data = search_result.get("data", search_result)  # handle both {data:{results:[]}} and {results:[]}
+    search_data = search_result.get("data", search_result)
     for entry in search_data.get("results", []):
         people = entry.get("people", [])
-        top_n = [p.get("id") for p in people[:max_people_per_company] if p.get("id")]
+        # Score and sort by title relevance — best matches first
+        scored = sorted(people, key=lambda p: _title_score(p.get("title", "")), reverse=True)
+        top_n = [p.get("id") for p in scored[:max_people_per_company] if p.get("id")]
         all_person_ids.extend(top_n)
 
     if not all_person_ids:
