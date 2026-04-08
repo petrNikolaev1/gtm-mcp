@@ -54,7 +54,8 @@ def _log_to_file(direction: str, method: str, endpoint: str, detail: str = ""):
 
 
 async def _api_call(method: str, endpoint: str, api_key: str, *,
-                    json_data: dict | None = None, params: dict | None = None) -> Any:
+                    json_data: dict | None = None, params: dict | None = None,
+                    max_retries: int = 3) -> Any:
     p = dict(params or {})
     p["api_key"] = api_key
     url = f"{BASE_URL}{endpoint}"
@@ -70,46 +71,60 @@ async def _api_call(method: str, endpoint: str, api_key: str, *,
     logger.info("SmartLead → %s %s%s", method, endpoint, payload_summary)
     _log_to_file("→", method, endpoint, payload_summary)
 
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            if method == "POST":
-                resp = await client.post(url, json=json_data, params=p)
-            elif method == "PATCH":
-                resp = await client.patch(url, json=json_data, params=p)
-            elif method == "DELETE":
-                resp = await client.request("DELETE", url, json=json_data, params=p)
-            else:
-                resp = await client.get(url, params=p)
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                if method == "POST":
+                    resp = await client.post(url, json=json_data, params=p)
+                elif method == "PATCH":
+                    resp = await client.patch(url, json=json_data, params=p)
+                elif method == "DELETE":
+                    resp = await client.request("DELETE", url, json=json_data, params=p)
+                else:
+                    resp = await client.get(url, params=p)
 
-            # Log response
-            body = resp.text[:300] if resp.text else ""
-            if resp.status_code >= 400:
-                logger.error("SmartLead ← %s %s → HTTP %s: %s", method, endpoint, resp.status_code, body)
-                _log_to_file("←", method, endpoint, f" HTTP {resp.status_code}: {body[:200]}")
-            else:
-                try:
-                    data = resp.json()
-                    if isinstance(data, list):
-                        logger.info("SmartLead ← %s %s → %s (%d items)", method, endpoint, resp.status_code, len(data))
-                        _log_to_file("←", method, endpoint, f" {resp.status_code} ({len(data)} items)")
-                    else:
+                # Retry on 429 (rate limit)
+                if resp.status_code == 429:
+                    wait = 2 ** attempt + 1  # 2s, 3s, 5s
+                    logger.warning("SmartLead 429 rate limit on %s %s — retry %d/%d in %ds",
+                                   method, endpoint, attempt + 1, max_retries, wait)
+                    _log_to_file("429", method, endpoint, f" retry {attempt + 1}/{max_retries} in {wait}s")
+                    await asyncio.sleep(wait)
+                    continue
+
+                # Log response
+                body = resp.text[:300] if resp.text else ""
+                if resp.status_code >= 400:
+                    logger.error("SmartLead ← %s %s → HTTP %s: %s", method, endpoint, resp.status_code, body)
+                    _log_to_file("←", method, endpoint, f" HTTP {resp.status_code}: {body[:200]}")
+                else:
+                    try:
+                        data = resp.json()
+                        if isinstance(data, list):
+                            logger.info("SmartLead ← %s %s → %s (%d items)", method, endpoint, resp.status_code, len(data))
+                            _log_to_file("←", method, endpoint, f" {resp.status_code} ({len(data)} items)")
+                        else:
+                            logger.info("SmartLead ← %s %s → %s", method, endpoint, resp.status_code)
+                            _log_to_file("←", method, endpoint, f" {resp.status_code}")
+                    except Exception:
                         logger.info("SmartLead ← %s %s → %s", method, endpoint, resp.status_code)
                         _log_to_file("←", method, endpoint, f" {resp.status_code}")
-                except Exception:
-                    logger.info("SmartLead ← %s %s → %s", method, endpoint, resp.status_code)
-                    _log_to_file("←", method, endpoint, f" {resp.status_code}")
 
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.HTTPStatusError as exc:
-        logger.error("SmartLead %s %s → %s: %s", method, endpoint,
-                      exc.response.status_code, exc.response.text[:300])
-        _log_to_file("ERROR", method, endpoint, f" HTTP {exc.response.status_code}: {exc.response.text[:200]}")
-        return None
-    except Exception as exc:
-        logger.error("SmartLead %s %s failed: %s", method, endpoint, exc)
-        _log_to_file("ERROR", method, endpoint, f" {str(exc)[:200]}")
-        return None
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as exc:
+            logger.error("SmartLead %s %s → %s: %s", method, endpoint,
+                          exc.response.status_code, exc.response.text[:300])
+            _log_to_file("ERROR", method, endpoint, f" HTTP {exc.response.status_code}: {exc.response.text[:200]}")
+            return None
+        except Exception as exc:
+            logger.error("SmartLead %s %s failed: %s", method, endpoint, exc)
+            _log_to_file("ERROR", method, endpoint, f" {str(exc)[:200]}")
+            return None
+
+    logger.error("SmartLead %s %s — exhausted %d retries (rate limited)", method, endpoint, max_retries)
+    _log_to_file("ERROR", method, endpoint, f" exhausted {max_retries} retries")
+    return None
 
 
 # ---------------------------------------------------------------------------
