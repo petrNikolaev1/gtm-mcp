@@ -1247,6 +1247,10 @@ async def pipeline_prepare_continuation(
         except Exception:
             pass
 
+    # Load ranked-but-unenriched people from previous run (if any)
+    unenriched_path = _campaign_path("ranked_unenriched.json", campaign_slug) if campaign_slug else "ranked_unenriched.json"
+    ranked_unenriched = workspace.load(project, unenriched_path) or []
+
     return {
         "success": True,
         "data": {
@@ -1255,9 +1259,14 @@ async def pipeline_prepare_continuation(
             "campaign_slug": campaign_slug,
             "prev_run_id": last_run_id,
             "new_run_id": new_run_id,
+            "ranked_unenriched": {
+                "count": len(ranked_unenriched),
+                "person_ids": ranked_unenriched,
+                "estimated_contacts": int(len(ranked_unenriched) * 0.7),  # ~70% enrichment yield
+            },
             "unused_targets": {
                 "count": len(unused_targets),
-                "domains": unused_targets[:200],  # cap response size
+                "domains": unused_targets[:200],
                 "estimated_contacts": len(unused_targets) * contacts_per_company,
             },
             "continuation_filters": last_filters,
@@ -1375,15 +1384,36 @@ async def pipeline_people_to_push(
             "Blind search without role ranking wastes credits on wrong roles."
         )}
 
-    all_person_ids = person_ids
+    all_person_ids = list(person_ids)
     logger.info("Using %d pre-selected person IDs (agent-ranked)", len(all_person_ids))
 
     if not all_person_ids:
         return {"success": False, "error": "No people found across target companies", "step": "search",
                 "targets_searched": len(target_domains)}
 
-    # 3. Enrich selected people (1 credit per verified email)
-    enrich_result = await apollo_enrich_people(api_key, all_person_ids)
+    # 3. Enrich ONLY enough for KPI — save the rest for future runs.
+    # Enrichment yield ~70-80% (not all IDs produce verified emails).
+    # Load KPI from run file to know how many contacts we need.
+    kpi_target = run_data.get("kpi", {}).get("target_people", 100)
+    # Existing contacts (Mode 3 append may already have some)
+    existing_contact_count = len(
+        (workspace.load(project, _campaign_path("contacts.json", campaign_slug)) or [])
+    )
+    needed = max(0, kpi_target - existing_contact_count)
+    # Buffer for yield loss: enrich ~40% more IDs than needed contacts
+    enrich_count = min(len(all_person_ids), max(needed, 10) + int(needed * 0.4))
+    ids_to_enrich = all_person_ids[:enrich_count]
+    ids_to_save = all_person_ids[enrich_count:]
+
+    if ids_to_save:
+        # Save unenriched ranked IDs for future "add more" runs — zero search/rank cost next time
+        workspace.save(project, _campaign_path("ranked_unenriched.json", campaign_slug), ids_to_save)
+        logger.info("Saved %d ranked-but-unenriched IDs for future runs (KPI-limited enrichment)", len(ids_to_save))
+
+    logger.info("Enriching %d of %d ranked IDs (need %d contacts, %d existing, %d saved for later)",
+                len(ids_to_enrich), len(all_person_ids), needed, existing_contact_count, len(ids_to_save))
+
+    enrich_result = await apollo_enrich_people(api_key, ids_to_enrich)
     if not enrich_result.get("success"):
         return {"success": False, "error": f"Enrichment failed: {enrich_result.get('error')}", "step": "enrich"}
 
