@@ -2,7 +2,7 @@
 
 ## Architecture
 
-Thin MCP server (tools) + domain knowledge (skills). Zero LLM calls inside the server.
+Thin MCP server (tools) + domain knowledge (skills).
 
 ### How It Works
 - **Tools** (`src/gtm_mcp/`): Thin API wrappers. Return raw data only.

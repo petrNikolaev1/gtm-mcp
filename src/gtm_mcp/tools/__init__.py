@@ -1,1 +1,1 @@
-"""Thin API wrapper tools. Zero LLM calls."""
+"""Thin API wrapper tools."""

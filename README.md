@@ -249,7 +249,7 @@ claude    # open Claude Code in the gtm-mcp directory
 ## Architecture
 
 ```
-Claude Code ──stdio──> gtm-mcp server (49 tools, 0 LLM calls)
+Claude Code ──stdio──> gtm-mcp server (49 tools)
                             |
                   +---------+---------+
                   v         v         v
@@ -257,7 +257,7 @@ Claude Code ──stdio──> gtm-mcp server (49 tools, 0 LLM calls)
               (search)  (campaigns) (LinkedIn)
 ```
 
-Zero LLM calls inside the server. Claude Code does all the reasoning using domain knowledge encoded as skills.
+Claude Code does all the reasoning using domain knowledge encoded as skills.
 
 **Tools** (`src/gtm_mcp/`): Thin API wrappers. Only data access
 **Skills** (`.claude/skills/`): Domain knowledge in markdown — classification rules, email writing rules, filter strategies. Claude reads these and reasons.
