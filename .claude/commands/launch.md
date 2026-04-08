@@ -158,7 +158,7 @@ Free text:
 ## Entity Naming — Project vs Campaign
 
 **Project = the OFFER/COMPANY** (who is selling). One project can have many campaigns.
-**Campaign = the SEGMENT being targeted** (who we're reaching out to).
+**Campaign = one outreach run** targeting a market vertical. A campaign can include multiple sub-segments (e.g., PAYMENTS + LENDING + BAAS all in one "fintech" campaign). Sub-segments are classification labels within the campaign, not separate campaigns.
 
 ```
 Project name: just the company/brand — "Sally", "Inxy", "EasyStaff"
@@ -166,16 +166,18 @@ Project name: just the company/brand — "Sally", "Inxy", "EasyStaff"
   → create_project(name="Sally")  → project_slug = "sally"
 
 Campaign slug: derived from campaign name via re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
-  Campaign name format: "{Project} {SEGMENT} DD/MM"
+  Campaign name format: "{Project} {VERTICAL} DD/MM"
   → "Sally FINTECH 08/04" → slug "sally-fintech-08-04"
 ```
 
 Examples:
-| Offer company | Segment | Campaign name | Campaign slug |
-|---------------|---------|---------------|---------------|
-| Sally | fintech | Sally FINTECH 08/04 | sally-fintech-08-04 |
-| Sally | SaaS | Sally SAAS 15/04 | sally-saas-15-04 |
-| Inxy | affiliate | Inxy AFFILIATE 07/04 | inxy-affiliate-07-04 |
+| Offer company | Vertical | Campaign name | Sub-segments inside |
+|---------------|----------|---------------|---------------------|
+| Sally | fintech | Sally FINTECH 08/04 | PAYMENTS, LENDING, BAAS, REGTECH, etc. |
+| Sally | SaaS | Sally SAAS 15/04 | CRM, ANALYTICS, DEVTOOLS, etc. |
+| Inxy | affiliate | Inxy AFFILIATE 07/04 | CPA, CPL, AD_NETWORKS, etc. |
+
+**Default: one campaign per vertical, all sub-segments included. Do NOT ask whether to split segments into separate campaigns unless the user explicitly requests it.**
 
 ## Mandatory Questions — RESOLVE IMMEDIATELY
 
