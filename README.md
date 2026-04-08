@@ -54,9 +54,9 @@ You can't send cold emails from Gmail — Google will shut you down. Instead, yo
 
 When people reply, you triage: interested (hand to sales), not interested (stop emailing), out of office (wait and retry). This MCP also automates reply classification.
 
-### Email Infrastructure You Need (One-Time, ~2 Weeks)
+### Email Infrastructure You Need (~2 Weeks Setup, Rotate Every 4-6 Weeks)
 
-Before sending cold emails, you need sending infrastructure. This is a one-time setup:
+Before sending cold emails, you need sending infrastructure. Initial setup takes ~2 weeks. Domains degrade over time as recipients mark emails as spam, so you'll need to rotate — buy new domains, warm them up, and retire old ones. Typical cycle: every 4-6 weeks, based on deliverability tests.
 
 **Why not use your regular email?** Google/Microsoft will flag your domain as spam if you send bulk cold emails. You'll stop receiving normal business emails. Never send cold outreach from your primary domain.
 
