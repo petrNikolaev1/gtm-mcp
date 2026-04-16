@@ -10,9 +10,9 @@ Thin MCP server (tools) + domain knowledge (skills).
 - **Commands** (`.claude/commands/`): Multi-step workflow orchestrators.
 - **Agents** (`.claude/agents/`): Batch-processing agent definitions.
 
-## Skills (13 total)
+## Skills (14 total)
 
-### Domain Skills (8)
+### Domain Skills (9)
 | Skill | Purpose |
 |-------|---------|
 | offer-extraction | Extract ICP from website/document/text (3-layer fallback) |
@@ -20,6 +20,7 @@ Thin MCP server (tools) + domain knowledge (skills).
 | company-qualification | Via negativa classification (97% accuracy, 2-pass re-eval, exploration enrichment) |
 | quality-gate | Pipeline checkpoints, KPI logic, exhaustion detection, 10 keyword regen angles |
 | email-sequence | 12-rule GOD_SEQUENCE cold email generation |
+| **deep-personalization** | **Per-contact icebreaker + personal CTA from public research (LinkedIn, press, Crunchbase). 6-hook taxonomy, batch subagents, SmartLead `{{icebreaker}}`/`{{personal_cta}}` custom fields. 2-3x reply uplift on AdNetwork April 2026.** |
 | linkedin-sequence | GetSales flow generation (5 types from 414 live flows) |
 | reply-classification | 3-tier reply funnel (regex FREE → keywords FREE → LLM cheap) |
 | pipeline-state | Entity model, run file format, round loop, filter tracking, cross-run intelligence |
